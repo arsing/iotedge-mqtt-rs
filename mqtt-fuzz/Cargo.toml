@@ -1,0 +1,25 @@
+[package]
+name = "mqtt-fuzz"
+version = "0.1.0"
+authors = ["Azure IoT Edge Devs"]
+license = "MIT"
+edition = "2018"
+publish = false
+
+[dependencies]
+afl = "0.4"
+mqtt = { path = "../mqtt" }
+bytes = "0.4"
+tokio = "0.1"
+
+[build-dependencies]
+bytes = "0.4"
+mqtt = { path = "../mqtt" }
+tokio = "0.1"
+
+[profile.dev]
+codegen-units = 1 # Workaround for https://github.com/rust-fuzz/cargo-fuzz/issues/161
+
+[profile.release]
+codegen-units = 1 # Workaround for https://github.com/rust-fuzz/cargo-fuzz/issues/161
+debug-assertions = true
