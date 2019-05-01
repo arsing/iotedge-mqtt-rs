@@ -2,6 +2,8 @@
  * MQTT protocol types.
  */
 
+use std::convert::TryInto;
+
 use bytes::{ Buf, BufMut, IntoBuf };
 
 mod packet;
@@ -146,11 +148,8 @@ impl tokio_codec::Decoder for Utf8StringDecoder {
 }
 
 fn encode_utf8_str<B>(item: &str, dst: &mut B) -> Result<(), EncodeError> where B: ByteBuf {
-	#[allow(clippy::cast_possible_truncation)]
-	dst.put_u16_be_bytes(match item.len() {
-		len if len <= usize::from(u16::max_value()) => len as u16,
-		len => return Err(EncodeError::StringTooLarge(len)),
-	});
+	let len = item.len();
+	dst.put_u16_be_bytes(len.try_into().map_err(|_| EncodeError::StringTooLarge(len))?);
 
 	dst.put_slice_bytes(item.as_bytes());
 

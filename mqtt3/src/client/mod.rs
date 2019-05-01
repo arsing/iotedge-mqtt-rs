@@ -747,6 +747,8 @@ impl std::error::Error for ShutdownError {
 
 #[cfg(test)]
 mod tests {
+	use std::convert::TryInto;
+
 	use super::*;
 
 	#[test]
@@ -802,10 +804,9 @@ mod tests {
 		expected[0] = 1 << 5;
 		assert_eq!(packet_identifiers.in_use[..], expected[..]);
 
-		let goes_in_next_block = std::mem::size_of::<usize>() * 8;
-		#[allow(clippy::cast_possible_truncation)]
+		let goes_in_next_block: u16 = (std::mem::size_of::<usize>() * 8).try_into().unwrap();
 		for i in 6..=goes_in_next_block {
-			assert_eq!(packet_identifiers.reserve().unwrap().get(), i as u16);
+			assert_eq!(packet_identifiers.reserve().unwrap().get(), i);
 		}
 		let mut expected = Box::new([0; PacketIdentifiers::SIZE]);
 		#[allow(clippy::identity_op)]
@@ -815,9 +816,9 @@ mod tests {
 		}
 		assert_eq!(packet_identifiers.in_use[..], expected[..]);
 
-		#[allow(clippy::cast_possible_truncation, clippy::range_minus_one)]
+		#[allow(clippy::range_minus_one)]
 		for i in 5..=(goes_in_next_block - 1) {
-			packet_identifiers.discard(crate::proto::PacketIdentifier::new(i as u16).unwrap());
+			packet_identifiers.discard(crate::proto::PacketIdentifier::new(i).unwrap());
 		}
 		let mut expected = Box::new([0; PacketIdentifiers::SIZE]);
 		#[allow(clippy::identity_op)]

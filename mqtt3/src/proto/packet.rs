@@ -1,3 +1,5 @@
+use std::convert::TryInto;
+
 use bytes::{ Buf, BufMut, IntoBuf };
 use tokio_codec::Decoder;
 
@@ -255,14 +257,7 @@ impl PacketMeta for Connect {
 			dst.put_u8_bytes(connect_flags);
 		}
 
-		{
-			#[allow(clippy::cast_possible_truncation)]
-			let keep_alive = match *keep_alive {
-				keep_alive if keep_alive.as_secs() <= u64::from(u16::max_value()) => keep_alive.as_secs() as u16,
-				keep_alive => return Err(super::EncodeError::KeepAliveTooHigh(keep_alive)),
-			};
-			dst.put_u16_be_bytes(keep_alive);
-		}
+		dst.put_u16_be_bytes(keep_alive.as_secs().try_into().map_err(|_| super::EncodeError::KeepAliveTooHigh(*keep_alive))?);
 
 		match client_id {
 			super::ClientId::ServerGenerated => super::encode_utf8_str("", dst)?,
@@ -272,12 +267,10 @@ impl PacketMeta for Connect {
 
 		if let Some(will) = will {
 			super::encode_utf8_str(&will.topic_name, dst)?;
-			#[allow(clippy::cast_possible_truncation)]
-			let will_len = match will.payload.len() {
-				will_len if will_len <= u16::max_value() as usize => will_len as u16,
-				will_len => return Err(super::EncodeError::WillTooLarge(will_len)),
-			};
-			dst.put_u16_be_bytes(will_len);
+
+			let will_len = will.payload.len();
+			dst.put_u16_be_bytes(will_len.try_into().map_err(|_| super::EncodeError::WillTooLarge(will_len))?);
+
 			dst.put_slice_bytes(&will.payload);
 		}
 
