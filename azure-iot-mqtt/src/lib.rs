@@ -75,6 +75,7 @@ pub enum Authentication {
 #[derive(Debug)]
 pub enum CreateClientError {
 	InvalidDefaultSubscription(mqtt3::UpdateSubscriptionError),
+	ParseEnvironmentVariable(&'static str, Box<dyn std::error::Error>),
 	ResolveIotHubHostname(Option<std::io::Error>),
 	WebSocketUrl(url::ParseError),
 }
@@ -83,6 +84,7 @@ impl std::fmt::Display for CreateClientError {
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			CreateClientError::InvalidDefaultSubscription(err) => write!(f, "could not create default MQTT subscription: {}", err),
+			CreateClientError::ParseEnvironmentVariable(name, err) => write!(f, "could not parse environment variable {}: {}", name, err),
 			CreateClientError::ResolveIotHubHostname(Some(err)) => write!(f, "could not resolve Azure IoT Hub hostname: {}", err),
 			CreateClientError::ResolveIotHubHostname(None) => write!(f, "could not resolve Azure IoT Hub hostname: no addresses found"),
 			CreateClientError::WebSocketUrl(err) => write!(f, "could not construct a valid URL for the Azure IoT Hub: {}", err),
@@ -94,6 +96,7 @@ impl std::error::Error for CreateClientError {
 	fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
 		match self {
 			CreateClientError::InvalidDefaultSubscription(err) => Some(err),
+			CreateClientError::ParseEnvironmentVariable(_, err) => Some(&**err),
 			CreateClientError::ResolveIotHubHostname(Some(err)) => Some(err),
 			CreateClientError::ResolveIotHubHostname(None) => None,
 			CreateClientError::WebSocketUrl(err) => Some(err),

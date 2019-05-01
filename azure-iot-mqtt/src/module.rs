@@ -112,6 +112,67 @@ impl Client {
 		})
 	}
 
+	/// Creates a new `Client`.
+	///
+	/// This is expected to be called from an IoT Edge module, and reads the device ID, module ID, etc
+	/// from the environment variables that the IoT Edge Security Daemon sets on every edge module.
+	pub fn new_for_edge_module(
+		transport: crate::Transport,
+
+		will: Option<bytes::Bytes>,
+
+		max_back_off: std::time::Duration,
+		keep_alive: std::time::Duration,
+	) -> Result<Self, crate::CreateClientError> {
+		let device_id =
+			std::env::var("IOTEDGE_DEVICEID")
+			.map_err(|err| crate::CreateClientError::ParseEnvironmentVariable("IOTEDGE_DEVICEID", Box::new(err)))?;
+
+		let module_id =
+			std::env::var("IOTEDGE_MODULEID")
+			.map_err(|err| crate::CreateClientError::ParseEnvironmentVariable("IOTEDGE_MODULEID", Box::new(err)))?;
+
+		let generation_id =
+			std::env::var("IOTEDGE_MODULEGENERATIONID")
+			.map_err(|err| crate::CreateClientError::ParseEnvironmentVariable("IOTEDGE_MODULEGENERATIONID", Box::new(err)))?;
+
+		let edgehub_hostname =
+			std::env::var("IOTEDGE_GATEWAYHOSTNAME")
+			.map_err(|err| crate::CreateClientError::ParseEnvironmentVariable("IOTEDGE_GATEWAYHOSTNAME", Box::new(err)))?;
+
+		let iothub_hostname =
+			std::env::var("IOTEDGE_IOTHUBHOSTNAME")
+			.map_err(|err| crate::CreateClientError::ParseEnvironmentVariable("IOTEDGE_IOTHUBHOSTNAME", Box::new(err)))?;
+
+		let workload_url =
+			std::env::var("IOTEDGE_WORKLOADURI")
+			.map_err(|err| crate::CreateClientError::ParseEnvironmentVariable("IOTEDGE_WORKLOADURI", Box::new(err)))?;
+		let workload_url =
+			workload_url.parse()
+			.map_err(|err| crate::CreateClientError::ParseEnvironmentVariable("IOTEDGE_WORKLOADURI", Box::new(err)))?;
+
+		let authentication = crate::Authentication::IotEdge {
+			device_id: device_id.clone(),
+			module_id: module_id.clone(),
+			generation_id,
+			iothub_hostname,
+			workload_url,
+		};
+
+		Self::new(
+			edgehub_hostname,
+			&device_id,
+			&module_id,
+			authentication,
+			transport,
+
+			will,
+
+			max_back_off,
+			keep_alive,
+		)
+	}
+
 	/// Gets a reference to the inner `mqtt3::Client`
 	pub fn inner(&self) -> &mqtt3::Client<crate::IoSource> {
 		&self.inner

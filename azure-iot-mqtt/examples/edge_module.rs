@@ -58,35 +58,10 @@ fn main() {
 		report_twin_state_period,
 	} = structopt::StructOpt::from_args();
 
-	let device_id = std::env::var("IOTEDGE_DEVICEID").expect("IOTEDGE_DEVICEID env var is not set");
-
-	let module_id = std::env::var("IOTEDGE_MODULEID").expect("IOTEDGE_MODULEID env var is not set");
-
-	let generation_id = std::env::var("IOTEDGE_MODULEGENERATIONID").expect("IOTEDGE_MODULEGENERATIONID env var is not set");
-
-	let edgehub_hostname = std::env::var("IOTEDGE_GATEWAYHOSTNAME").expect("IOTEDGE_GATEWAYHOSTNAME env var is not set");
-
-	let iothub_hostname = std::env::var("IOTEDGE_IOTHUBHOSTNAME").expect("IOTEDGE_IOTHUBHOSTNAME env var is not set");
-
-	let workload_url = std::env::var("IOTEDGE_WORKLOADURI").expect("IOTEDGE_WORKLOADURI env var is not set");
-	let workload_url = workload_url.parse().expect("could not parse IOTEDGE_WORKLOADURI");
-
-	let authentication = azure_iot_mqtt::Authentication::IotEdge {
-		device_id: device_id.clone(),
-		module_id: module_id.clone(),
-		generation_id,
-		iothub_hostname,
-		workload_url,
-	};
-
 	let mut runtime = tokio::runtime::Runtime::new().expect("couldn't initialize tokio runtime");
 	let executor = runtime.executor();
 
-	let client = azure_iot_mqtt::module::Client::new(
-		edgehub_hostname,
-		&device_id,
-		&module_id,
-		authentication,
+	let client = azure_iot_mqtt::module::Client::new_for_edge_module(
 		if use_websocket { azure_iot_mqtt::Transport::WebSocket } else { azure_iot_mqtt::Transport::Tcp },
 
 		will.map(Into::into),
