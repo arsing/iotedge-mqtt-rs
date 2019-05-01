@@ -494,8 +494,8 @@ impl UpdateSubscriptionHandle {
 	/// was canceled out by a matching unsubscription before the subscription was ever sent to the server). So there is not a one-to-one correspondence
 	/// between subscription update requests and acks.
 	///
-	/// To know when the server has acked the subscription update, wait for the client to send an [`mqtt::Event::SubscriptionUpdate::Subscribe`] value
-	/// that contains a `mqtt::proto::SubscribeTo` value with the same topic filter.
+	/// To know when the server has acked the subscription update, wait for the client to send an [`mqtt3::Event::SubscriptionUpdate::Subscribe`] value
+	/// that contains a `mqtt3::proto::SubscribeTo` value with the same topic filter.
 	/// Be careful about using `==` to determine this, since the QoS in the event may be higher than the one requested here.
 	pub fn subscribe(&mut self, subscribe_to: crate::proto::SubscribeTo) -> impl Future<Item = (), Error = UpdateSubscriptionError> {
 		let sender = self.0.clone();
@@ -518,7 +518,7 @@ impl UpdateSubscriptionHandle {
 	/// was canceled out by a matching unsubscription before the subscription was ever sent to the server). So there is not a one-to-one correspondence
 	/// between subscription update requests and acks.
 	///
-	/// To know when the server has acked the subscription update, wait for the client to send an [`mqtt::Event::SubscriptionUpdate::Unsubscribe`] value
+	/// To know when the server has acked the subscription update, wait for the client to send an [`mqtt3::Event::SubscriptionUpdate::Unsubscribe`] value
 	/// for this topic filter.
 	pub fn unsubscribe(&mut self, unsubscribe_from: String) -> impl Future<Item = (), Error = UpdateSubscriptionError> {
 		let sender = self.0.clone();

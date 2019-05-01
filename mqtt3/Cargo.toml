@@ -1,5 +1,5 @@
 [package]
-name = "mqtt"
+name = "mqtt3"
 version = "0.1.0"
 authors = ["Azure IoT Edge Devs"]
 license = "MIT"

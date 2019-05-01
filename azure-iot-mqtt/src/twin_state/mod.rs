@@ -36,7 +36,7 @@ pub(crate) enum InternalTwinStateMessage {
 }
 
 impl InternalTwinStateMessage {
-	pub(crate) fn parse(publication: mqtt::ReceivedPublication) -> Result<Self, MessageParseError> {
+	pub(crate) fn parse(publication: mqtt3::ReceivedPublication) -> Result<Self, MessageParseError> {
 		if let Some(captures) = RESPONSE_REGEX.captures(&publication.topic_name) {
 			let status = &captures[1];
 			let status: crate::Status = status.parse().map_err(|err| MessageParseError::ParseResponseStatus(status.to_string(), err))?;
@@ -82,7 +82,7 @@ pub(crate) enum MessageParseError {
 	ParseResponseVersion(String, std::num::ParseIntError),
 	ParseResponseRequestId(String, std::num::ParseIntError),
 	ParseResponseStatus(String, std::num::ParseIntError),
-	UnrecognizedMessage(mqtt::ReceivedPublication),
+	UnrecognizedMessage(mqtt3::ReceivedPublication),
 }
 
 impl std::fmt::Display for MessageParseError {

@@ -2,7 +2,7 @@
 ///
 /// Also checks that a successfully parsed packet can be encoded and re-decoded successfully.
 ///
-/// Primarily meant to be used to investigate mqtt-fuzz crashes.
+/// Primarily meant to be used to investigate mqtt3-fuzz crashes.
 ///
 /// Example:
 ///
@@ -17,7 +17,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let file = std::fs::OpenOptions::new().read(true).open(filename)?;
 	let mut file = std::io::BufReader::new(file);
 
-	let mut codec: mqtt::proto::PacketCodec = Default::default();
+	let mut codec: mqtt3::proto::PacketCodec = Default::default();
 
 	let mut data = vec![];
 	file.read_to_end(&mut data)?;

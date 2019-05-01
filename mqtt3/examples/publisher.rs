@@ -1,6 +1,6 @@
 // Example:
 //
-//     cargo run --example subscriber -- --server 127.0.0.1:1883 --client-id 'example-subscriber' --topic-filter foo --qos 1
+//     cargo run --example publisher -- --server 127.0.0.1:1883 --client-id 'example-publisher' --publish-frequency 1000 --topic foo --qos 1 --payload 'hello, world'
 
 use futures::{ Future, Stream };
 
@@ -36,15 +36,26 @@ struct Options {
 	)]
 	keep_alive: std::time::Duration,
 
-	#[structopt(help = "The topic filter to subscribe to.", long = "topic-filter")]
-	topic_filter: String,
+	#[structopt(
+		help = "How often to publish to the server, in milliseconds.",
+		long = "publish-frequency",
+		default_value = "1000",
+		parse(try_from_str = "duration_from_millis_str"),
+	)]
+	publish_frequency: std::time::Duration,
 
-	#[structopt(help = "The QoS with which to subscribe to the topic.", long = "qos", parse(try_from_str = "common::qos_from_str"))]
-	qos: mqtt::proto::QoS,
+	#[structopt(help = "The topic of the publications.", long = "topic")]
+	topic: String,
+
+	#[structopt(help = "The QoS of the publications.", long = "qos", parse(try_from_str = "common::qos_from_str"))]
+	qos: mqtt3::proto::QoS,
+
+	#[structopt(help = "The payload of the publications.", long = "payload")]
+	payload: String,
 }
 
 fn main() {
-	env_logger::Builder::from_env(env_logger::Env::new().filter_or("MQTT_LOG", "mqtt=debug,mqtt::logging=trace,subscriber=info")).init();
+	env_logger::Builder::from_env(env_logger::Env::new().filter_or("MQTT_LOG", "mqtt3=debug,mqtt3::logging=trace,publisher=info")).init();
 
 	let Options {
 		server,
@@ -53,14 +64,17 @@ fn main() {
 		password,
 		max_reconnect_back_off,
 		keep_alive,
-		topic_filter,
+		publish_frequency,
+		topic,
 		qos,
+		payload,
 	} = structopt::StructOpt::from_args();
 
 	let mut runtime = tokio::runtime::Runtime::new().expect("couldn't initialize tokio runtime");
+	let executor = runtime.executor();
 
 	let client =
-		mqtt::Client::new(
+		mqtt3::Client::new(
 			client_id,
 			username,
 			None,
@@ -83,37 +97,39 @@ fn main() {
 			Ok(())
 		}));
 
-	let mut update_subscription_handle = client.update_subscription_handle().expect("couldn't get subscription update handle");;
-	runtime.spawn(
-		update_subscription_handle
-		.subscribe(mqtt::proto::SubscribeTo {
-			topic_filter,
-			qos,
+	let payload: bytes::Bytes = payload.into();
+
+	let mut publish_handle = client.publish_handle().expect("couldn't get publish handle");
+	executor.clone().spawn(
+		tokio::timer::Interval::new(std::time::Instant::now(), publish_frequency)
+		.then(move |result| {
+			let _ = result.expect("timer failed");
+
+			let topic = topic.clone();
+			log::info!("Publishing to {} ...", topic);
+
+			executor.spawn(publish_handle
+				.publish(mqtt3::proto::Publication {
+					topic_name: topic.clone(),
+					qos,
+					retain: false,
+					payload: payload.clone(),
+				})
+				.then(move |result| {
+					let () = result.expect("couldn't publish");
+					log::info!("Published to {}", topic);
+					Ok(())
+				}));
+
+			Ok(())
 		})
-		.map_err(|err| panic!("couldn't update subscription: {}", err)));
+		.for_each(Ok));
 
-	let f = client.for_each(|event| {
-		if let mqtt::Event::Publication(publication) = event {
-			match std::str::from_utf8(&publication.payload) {
-				Ok(s) =>
-					log::info!(
-						"Received publication: {:?} {:?} {:?}",
-						publication.topic_name,
-						s,
-						publication.qos,
-					),
-				Err(_) =>
-					log::info!(
-						"Received publication: {:?} {:?} {:?}",
-						publication.topic_name,
-						publication.payload,
-						publication.qos,
-					),
-			}
-		}
-
-		Ok(())
-	});
+	let f = client.for_each(|_| Ok(()));
 
 	runtime.block_on(f).expect("subscriber failed");
+}
+
+fn duration_from_millis_str(s: &str) -> Result<std::time::Duration, <u64 as std::str::FromStr>::Err> {
+	Ok(std::time::Duration::from_millis(s.parse()?))
 }

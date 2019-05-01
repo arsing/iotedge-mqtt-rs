@@ -8,7 +8,7 @@ use futures::Stream;
 ///
 /// It automatically reconnects if the connection to the server is broken. Each reconnection will yield one [`Message::TwinInitial`] message.
 pub struct Client {
-	inner: mqtt::Client<crate::IoSource>,
+	inner: mqtt3::Client<crate::IoSource>,
 
 	num_default_subscriptions: usize,
 
@@ -113,8 +113,8 @@ impl Client {
 		})
 	}
 
-	/// Gets a reference to the inner `mqtt::Client`
-	pub fn inner(&self) -> &mqtt::Client<crate::IoSource> {
+	/// Gets a reference to the inner `mqtt3::Client`
+	pub fn inner(&self) -> &mqtt3::Client<crate::IoSource> {
 		&self.inner
 	}
 
@@ -131,7 +131,7 @@ impl Client {
 
 impl Stream for Client {
 	type Item = Message;
-	type Error = mqtt::Error;
+	type Error = mqtt3::Error;
 
 	fn poll(&mut self) -> futures::Poll<Option<Self::Item>, Self::Error> {
 		loop {
@@ -140,9 +140,9 @@ impl Stream for Client {
 			while let futures::Async::Ready(Some(direct_method_response)) = self.direct_method_response_recv.poll().expect("Receiver::poll cannot fail") {
 				let crate::DirectMethodResponse { request_id, status, payload, ack_sender } = direct_method_response;
 				let payload = serde_json::to_vec(&payload).expect("cannot fail to serialize serde_json::Value");
-				let publication = mqtt::proto::Publication {
+				let publication = mqtt3::proto::Publication {
 					topic_name: format!("$iothub/methods/res/{}/?$rid={}", status, request_id),
-					qos: mqtt::proto::QoS::AtLeastOnce,
+					qos: mqtt3::proto::QoS::AtLeastOnce,
 					retain: false,
 					payload: payload.into(),
 				};
@@ -156,9 +156,9 @@ impl Stream for Client {
 				State::WaitingForSubscriptions { reset_session, acked } =>
 					if *reset_session {
 						match self.inner.poll()? {
-							futures::Async::Ready(Some(mqtt::Event::NewConnection { .. })) => (),
+							futures::Async::Ready(Some(mqtt3::Event::NewConnection { .. })) => (),
 
-							futures::Async::Ready(Some(mqtt::Event::Publication(publication))) => match InternalMessage::parse(publication) {
+							futures::Async::Ready(Some(mqtt3::Event::Publication(publication))) => match InternalMessage::parse(publication) {
 								Ok(InternalMessage::DirectMethod { name, payload, request_id }) =>
 									return Ok(futures::Async::Ready(Some(Message::DirectMethod { name, payload, request_id }))),
 
@@ -169,7 +169,7 @@ impl Stream for Client {
 									log::warn!("Discarding message that could not be parsed: {}", err),
 							},
 
-							futures::Async::Ready(Some(mqtt::Event::SubscriptionUpdates(updates))) => {
+							futures::Async::Ready(Some(mqtt3::Event::SubscriptionUpdates(updates))) => {
 								log::debug!("subscriptions acked by server: {:?}", updates);
 								*acked += updates.len();
 								log::debug!("waiting for {} more subscriptions", self.num_default_subscriptions - *acked);
@@ -191,14 +191,14 @@ impl Stream for Client {
 					let mut continue_loop = false;
 
 					let mut twin_state_message = match self.inner.poll()? {
-						futures::Async::Ready(Some(mqtt::Event::NewConnection { reset_session })) => {
+						futures::Async::Ready(Some(mqtt3::Event::NewConnection { reset_session })) => {
 							self.state = State::WaitingForSubscriptions { reset_session, acked: 0 };
 							self.desired_properties.new_connection();
 							self.reported_properties.new_connection();
 							continue;
 						},
 
-						futures::Async::Ready(Some(mqtt::Event::Publication(publication))) => match InternalMessage::parse(publication) {
+						futures::Async::Ready(Some(mqtt3::Event::Publication(publication))) => match InternalMessage::parse(publication) {
 							Ok(InternalMessage::DirectMethod { name, payload, request_id }) =>
 								return Ok(futures::Async::Ready(Some(Message::DirectMethod { name, payload, request_id }))),
 
@@ -216,7 +216,7 @@ impl Stream for Client {
 						},
 
 						// Don't expect any subscription updates at this point
-						futures::Async::Ready(Some(mqtt::Event::SubscriptionUpdates(_))) => unreachable!(),
+						futures::Async::Ready(Some(mqtt3::Event::SubscriptionUpdates(_))) => unreachable!(),
 
 						futures::Async::Ready(None) => return Ok(futures::Async::Ready(None)),
 
@@ -321,7 +321,7 @@ enum InternalMessage {
 }
 
 impl InternalMessage {
-	fn parse(publication: mqtt::ReceivedPublication) -> Result<Self, MessageParseError> {
+	fn parse(publication: mqtt3::ReceivedPublication) -> Result<Self, MessageParseError> {
 		if let Some(captures) = crate::DIRECT_METHOD_REGEX.captures(&publication.topic_name) {
 			let name = captures[1].to_string();
 			let payload = serde_json::from_slice(&publication.payload).map_err(MessageParseError::Json)?;

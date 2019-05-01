@@ -2,8 +2,8 @@ use futures::{ Future, Stream };
 
 pub(crate) fn verify_client_events(
 	runtime: &mut tokio::runtime::current_thread::Runtime,
-	client: mqtt::Client<IoSource>,
-	expected: Vec<mqtt::Event>,
+	client: mqtt3::Client<IoSource>,
+	expected: Vec<mqtt3::Event>,
 ) {
 	let mut expected = expected.into_iter();
 
@@ -13,7 +13,7 @@ pub(crate) fn verify_client_events(
 	}));
 }
 
-/// An `mqtt::IoSource` impl suitable for use with an `mqtt::Client`. The IoSource pretends to provide connections
+/// An `mqtt3::IoSource` impl suitable for use with an `mqtt3::Client`. The IoSource pretends to provide connections
 /// to a real MQTT server.
 #[derive(Debug)]
 pub(crate) struct IoSource(std::vec::IntoIter<TestConnection>);
@@ -29,7 +29,7 @@ impl IoSource {
 	/// *and* each connection's packets were used up completely before that connection was dropped.
 	/// If any connection is dropped before its packets have been used up, the future will resolve to an error.
 	pub(crate) fn new(
-		server_steps: Vec<Vec<TestConnectionStep<mqtt::proto::Packet, mqtt::proto::Packet>>>,
+		server_steps: Vec<Vec<TestConnectionStep<mqtt3::proto::Packet, mqtt3::proto::Packet>>>,
 	) -> (Self, impl Future<Item = (), Error = futures::sync::oneshot::Canceled>) {
 		use tokio::codec::Encoder;
 
@@ -43,7 +43,7 @@ impl IoSource {
 					TestConnectionStep::Receives(packet) => TestConnectionStep::Receives((packet, bytes::BytesMut::new())),
 
 					TestConnectionStep::Sends(packet) => {
-						let mut packet_codec: mqtt::proto::PacketCodec = Default::default();
+						let mut packet_codec: mqtt3::proto::PacketCodec = Default::default();
 						let mut bytes = bytes::BytesMut::new();
 						packet_codec.encode(packet.clone(), &mut bytes).unwrap();
 						TestConnectionStep::Sends((packet, std::io::Cursor::new(bytes)))
@@ -65,7 +65,7 @@ impl IoSource {
 	}
 }
 
-impl mqtt::IoSource for IoSource {
+impl mqtt3::IoSource for IoSource {
 	type Io = TestConnection;
 	type Future = Box<Future<Item = (Self::Io, Option<String>), Error = std::io::Error> + Send>;
 
@@ -98,8 +98,8 @@ impl mqtt::IoSource for IoSource {
 #[derive(Debug)]
 pub(crate) struct TestConnection {
 	steps: std::collections::VecDeque<TestConnectionStep<
-		(mqtt::proto::Packet, bytes::BytesMut),
-		(mqtt::proto::Packet, std::io::Cursor<bytes::BytesMut>),
+		(mqtt3::proto::Packet, bytes::BytesMut),
+		(mqtt3::proto::Packet, std::io::Cursor<bytes::BytesMut>),
 	>>,
 	done_send: Option<futures::sync::oneshot::Sender<()>>,
 }
@@ -161,7 +161,7 @@ impl std::io::Write for TestConnection {
 
 				bytes.extend_from_slice(buf);
 
-				let mut packet_codec: mqtt::proto::PacketCodec = Default::default();
+				let mut packet_codec: mqtt3::proto::PacketCodec = Default::default();
 				match packet_codec.decode(bytes) {
 					Ok(Some(actual_packet)) => {
 						// Codec will remove the bytes it's parsed successfully, so whatever's left is what didn't get parsed

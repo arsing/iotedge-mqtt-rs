@@ -48,7 +48,7 @@ struct Options {
 }
 
 fn main() {
-	env_logger::Builder::from_env(env_logger::Env::new().filter_or("AZURE_IOT_MQTT_LOG", "mqtt=debug,mqtt::logging=trace,azure_iot_mqtt=debug,module=info")).init();
+	env_logger::Builder::from_env(env_logger::Env::new().filter_or("AZURE_IOT_MQTT_LOG", "mqtt3=debug,mqtt3::logging=trace,azure_iot_mqtt=debug,module=info")).init();
 
 	let Options {
 		use_websocket,

@@ -74,7 +74,7 @@ pub enum Authentication {
 /// Errors from creating a device or module client
 #[derive(Debug)]
 pub enum CreateClientError {
-	InvalidDefaultSubscription(mqtt::UpdateSubscriptionError),
+	InvalidDefaultSubscription(mqtt3::UpdateSubscriptionError),
 	ResolveIotHubHostname(Option<std::io::Error>),
 	WebSocketUrl(url::ParseError),
 }
@@ -146,7 +146,7 @@ struct DirectMethodResponse {
 	request_id: String,
 	status: crate::Status,
 	payload: serde_json::Value,
-	ack_sender: futures::sync::oneshot::Sender<Box<dyn Future<Item = (), Error = mqtt::PublishError> + Send>>,
+	ack_sender: futures::sync::oneshot::Sender<Box<dyn Future<Item = (), Error = mqtt3::PublishError> + Send>>,
 }
 
 /// Represents the status code used in initial twin responses and device method responses
@@ -213,7 +213,7 @@ fn client_new(
 
 	max_back_off: std::time::Duration,
 	keep_alive: std::time::Duration,
-) -> Result<(mqtt::Client<crate::IoSource>, usize), crate::CreateClientError> {
+) -> Result<(mqtt3::Client<crate::IoSource>, usize), crate::CreateClientError> {
 	let client_id =
 		if let Some(module_id) = &module_id {
 			format!("{}/{}", device_id, module_id)
@@ -235,9 +235,9 @@ fn client_new(
 		(Some(payload), None) => Some((format!("devices/{}/messages/events/", device_id), payload)),
 		(None, _) => None,
 	};
-	let will = will.map(|(topic_name, payload)| mqtt::proto::Publication {
+	let will = will.map(|(topic_name, payload)| mqtt3::proto::Publication {
 		topic_name,
-		qos: mqtt::proto::QoS::AtMostOnce,
+		qos: mqtt3::proto::QoS::AtMostOnce,
 		retain: false,
 		payload,
 	});
@@ -249,7 +249,7 @@ fn client_new(
 		transport,
 	)?;
 
-	let mut inner = mqtt::Client::new(
+	let mut inner = mqtt3::Client::new(
 		Some(client_id),
 		Some(username),
 		will,
@@ -260,29 +260,29 @@ fn client_new(
 
 	let mut default_subscriptions = vec![
 		// Twin initial GET response
-		mqtt::proto::SubscribeTo {
+		mqtt3::proto::SubscribeTo {
 			topic_filter: "$iothub/twin/res/#".to_string(),
-			qos: mqtt::proto::QoS::AtMostOnce,
+			qos: mqtt3::proto::QoS::AtMostOnce,
 		},
 
 		// Twin patches
-		mqtt::proto::SubscribeTo {
+		mqtt3::proto::SubscribeTo {
 			topic_filter: "$iothub/twin/PATCH/properties/desired/#".to_string(),
-			qos: mqtt::proto::QoS::AtMostOnce,
+			qos: mqtt3::proto::QoS::AtMostOnce,
 		},
 
 		// Module methods
-		mqtt::proto::SubscribeTo {
+		mqtt3::proto::SubscribeTo {
 			topic_filter: "$iothub/methods/POST/#".to_string(),
-			qos: mqtt::proto::QoS::AtLeastOnce,
+			qos: mqtt3::proto::QoS::AtLeastOnce,
 		},
 	];
 	if module_id.is_none() {
 		default_subscriptions.push(
 			// Direct methods
-			mqtt::proto::SubscribeTo {
+			mqtt3::proto::SubscribeTo {
 				topic_filter: "$iothub/methods/POST/#".to_string(),
-				qos: mqtt::proto::QoS::AtLeastOnce,
+				qos: mqtt3::proto::QoS::AtLeastOnce,
 			},
 		);
 	}
@@ -294,9 +294,9 @@ fn client_new(
 			Ok(()) => (),
 
 			// The subscription can only fail with this error if `inner` has shut down, which is not the case here
-			Err(mqtt::UpdateSubscriptionError::ClientDoesNotExist) => unreachable!(),
+			Err(mqtt3::UpdateSubscriptionError::ClientDoesNotExist) => unreachable!(),
 
-			Err(err @ mqtt::UpdateSubscriptionError::EncodePacket(..)) => return Err(CreateClientError::InvalidDefaultSubscription(err)),
+			Err(err @ mqtt3::UpdateSubscriptionError::EncodePacket(..)) => return Err(CreateClientError::InvalidDefaultSubscription(err)),
 		}
 	}
 

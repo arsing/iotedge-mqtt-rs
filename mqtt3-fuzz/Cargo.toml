@@ -1,5 +1,5 @@
 [package]
-name = "mqtt-fuzz"
+name = "mqtt3-fuzz"
 version = "0.1.0"
 authors = ["Azure IoT Edge Devs"]
 license = "MIT"
@@ -8,13 +8,13 @@ publish = false
 
 [dependencies]
 afl = "0.4"
-mqtt = { path = "../mqtt" }
+mqtt3 = { path = "../mqtt3" }
 bytes = "0.4"
 tokio = "0.1"
 
 [build-dependencies]
 bytes = "0.4"
-mqtt = { path = "../mqtt" }
+mqtt3 = { path = "../mqtt3" }
 tokio = "0.1"
 
 [profile.dev]

@@ -55,7 +55,7 @@ impl State {
 	)]
 	pub(crate) fn poll(
 		&mut self,
-		client: &mut mqtt::Client<crate::IoSource>,
+		client: &mut mqtt3::Client<crate::IoSource>,
 
 		message: &mut Option<super::InternalTwinStateMessage>,
 		previous_request_id: &mut u8,
@@ -164,12 +164,12 @@ impl State {
 					*previous_request_id = request_id;
 
 					// We don't care about the response since this is a QoS 0 publication.
-					// We don't even need to `poll()` the future because `mqtt::Client::publish` puts it in the send queue *synchronously*.
-					// But we do need to tell the caller client to poll the `mqtt::Client` at least once more so that it attempts to send the message,
+					// We don't even need to `poll()` the future because `mqtt3::Client::publish` puts it in the send queue *synchronously*.
+					// But we do need to tell the caller client to poll the `mqtt3::Client` at least once more so that it attempts to send the message,
 					// so return `Response::Continue`.
-					let _ = client.publish(mqtt::proto::Publication {
+					let _ = client.publish(mqtt3::proto::Publication {
 						topic_name: format!("$iothub/twin/PATCH/properties/reported/?$rid={}", request_id),
-						qos: mqtt::proto::QoS::AtMostOnce,
+						qos: mqtt3::proto::QoS::AtMostOnce,
 						retain: false,
 						payload: payload.into(),
 					});

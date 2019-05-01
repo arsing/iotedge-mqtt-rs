@@ -1,6 +1,6 @@
 This repository contains:
 
-- `mqtt`: An MQTT v3.1.1 Client implementation in Rust.
+- `mqtt3`: An MQTT v3.1.1 Client implementation in Rust.
 
 - `azure-iot-mqtt`: An Azure IoT client library in Rust for devices, modules and edge modules.
 

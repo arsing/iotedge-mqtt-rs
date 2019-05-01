@@ -1,10 +1,10 @@
 /azure-iot-mqtt/Cargo.lock
 /azure-iot-mqtt/target/
 
-/mqtt-fuzz/Cargo.lock
-/mqtt-fuzz/in/
-/mqtt-fuzz/out/
-/mqtt-fuzz/target/
+/mqtt3/Cargo.lock
+/mqtt3/target/
 
-/mqtt/Cargo.lock
-/mqtt/target/
+/mqtt3-fuzz/Cargo.lock
+/mqtt3-fuzz/in/
+/mqtt3-fuzz/out/
+/mqtt3-fuzz/target/

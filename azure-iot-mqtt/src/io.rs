@@ -2,7 +2,7 @@
 
 use futures::Future;
 
-/// A [`mqtt::IoSource`] implementation used by the clients.
+/// A [`mqtt3::IoSource`] implementation used by the clients.
 pub struct IoSource {
 	iothub_hostname: std::sync::Arc<str>,
 	iothub_host: std::net::SocketAddr,
@@ -68,7 +68,7 @@ url::define_encode_set! {
     pub IOTHUB_ENCODE_SET = [url::percent_encoding::PATH_SEGMENT_ENCODE_SET] | { '=' }
 }
 
-impl mqtt::IoSource for IoSource {
+impl mqtt3::IoSource for IoSource {
 	type Io = Io<tokio_tls::TlsStream<tokio_io_timeout::TimeoutStream<tokio_tcp::TcpStream>>>;
 	type Future = Box<dyn Future<Item = (Self::Io, Option<String>), Error = std::io::Error> + Send>;
 
