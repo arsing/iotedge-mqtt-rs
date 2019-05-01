@@ -64,7 +64,6 @@ impl Client {
 	/// * `keep_alive`
 	///
 	///     The keep-alive time advertised to the server. The client will ping the server at half this interval.
-	#[allow(clippy::new_ret_no_self)]
 	pub fn new(
 		iothub_hostname: String,
 		device_id: &str,

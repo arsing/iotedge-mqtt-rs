@@ -21,7 +21,6 @@ enum IoSourceExtra {
 }
 
 impl IoSource {
-	#[allow(clippy::new_ret_no_self)] // Clippy bug
 	pub(crate) fn new(
 		iothub_hostname: std::sync::Arc<str>,
 		authentication: crate::Authentication,

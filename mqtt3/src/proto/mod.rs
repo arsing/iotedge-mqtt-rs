@@ -246,7 +246,6 @@ impl PacketIdentifier {
 	}
 
 	/// Convert the given raw packet identifier into this type.
-	#[allow(clippy::new_ret_no_self)] // Clippy bug
 	pub fn new(raw: u16) -> Option<Self> {
 		match raw {
 			0 => None,
