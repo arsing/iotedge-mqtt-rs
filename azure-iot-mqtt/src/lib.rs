@@ -258,7 +258,7 @@ fn client_new(
 		keep_alive,
 	);
 
-	let mut default_subscriptions = vec![
+	let default_subscriptions = vec![
 		// Twin initial GET response
 		mqtt3::proto::SubscribeTo {
 			topic_filter: "$iothub/twin/res/#".to_string(),
@@ -271,21 +271,12 @@ fn client_new(
 			qos: mqtt3::proto::QoS::AtMostOnce,
 		},
 
-		// Module methods
+		// Direct methods / module methods
 		mqtt3::proto::SubscribeTo {
 			topic_filter: "$iothub/methods/POST/#".to_string(),
 			qos: mqtt3::proto::QoS::AtLeastOnce,
 		},
 	];
-	if module_id.is_none() {
-		default_subscriptions.push(
-			// Direct methods
-			mqtt3::proto::SubscribeTo {
-				topic_filter: "$iothub/methods/POST/#".to_string(),
-				qos: mqtt3::proto::QoS::AtLeastOnce,
-			},
-		);
-	}
 
 	let num_default_subscriptions = default_subscriptions.len();
 
