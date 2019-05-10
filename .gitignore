@@ -8,3 +8,6 @@
 /mqtt3-fuzz/in/
 /mqtt3-fuzz/out/
 /mqtt3-fuzz/target/
+
+/mqtt5/Cargo.lock
+/mqtt5/target/

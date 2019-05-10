@@ -1,5 +1,5 @@
 /*!
- * This crate contains an implementation of an MQTT 3.1.1 client.
+ * This crate contains an implementation of an MQTT 5.0 client.
  */
 
 #![deny(rust_2018_idioms, warnings)]
