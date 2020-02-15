@@ -1,16 +1,20 @@
-use futures::{ Future, Stream };
+use std::future::Future;
 
 pub(crate) fn verify_client_events(
-	runtime: &mut tokio::runtime::current_thread::Runtime,
-	client: mqtt3::Client<IoSource>,
+	runtime: &mut tokio::runtime::Runtime,
+	mut client: mqtt3::Client<IoSource>,
 	expected: Vec<mqtt3::Event>,
 ) {
 	let mut expected = expected.into_iter();
 
-	runtime.spawn(client.map_err(|err| panic!("{:?}", err)).for_each(move |event| {
-		assert_eq!(expected.next(), Some(event));
-		Ok(())
-	}));
+	runtime.spawn(async move {
+		use futures_util::StreamExt;
+
+		while let Some(event) = client.next().await {
+			let event = event.unwrap();
+			assert_eq!(expected.next(), Some(event));
+		}
+	});
 }
 
 /// An `mqtt3::IoSource` impl suitable for use with an `mqtt3::Client`. The IoSource pretends to provide connections
@@ -30,36 +34,40 @@ impl IoSource {
 	/// If any connection is dropped before its packets have been used up, the future will resolve to an error.
 	pub(crate) fn new(
 		server_steps: Vec<Vec<TestConnectionStep<mqtt3::proto::Packet, mqtt3::proto::Packet>>>,
-	) -> (Self, impl Future<Item = (), Error = futures::sync::oneshot::Canceled>) {
-		use tokio::codec::Encoder;
+	) -> (Self, impl Future<Output = Result<(), futures_channel::oneshot::Canceled>>) {
+		use futures_util::TryFutureExt;
+		use tokio_util::codec::Encoder;
 
-		let mut connections = Vec::with_capacity(server_steps.len());
-		let mut done: Box<Future<Item = _, Error = _> + Send> = Box::new(futures::future::ok(()));
+		let (connections, done): (Vec<_>, Vec<_>) =
+			server_steps.into_iter()
+			.map(|server_steps| {
+				let steps =
+					server_steps.into_iter()
+					.map(|step| match step {
+						TestConnectionStep::Receives(packet) => TestConnectionStep::Receives((packet, bytes::BytesMut::new())),
 
-		for server_steps in server_steps {
-			let steps =
-				server_steps.into_iter()
-				.map(|step| match step {
-					TestConnectionStep::Receives(packet) => TestConnectionStep::Receives((packet, bytes::BytesMut::new())),
+						TestConnectionStep::Sends(packet) => {
+							let mut packet_codec: mqtt3::proto::PacketCodec = Default::default();
+							let mut bytes = bytes::BytesMut::new();
+							packet_codec.encode(packet.clone(), &mut bytes).unwrap();
+							TestConnectionStep::Sends((packet, std::io::Cursor::new(bytes)))
+						},
+					})
+					.collect();
 
-					TestConnectionStep::Sends(packet) => {
-						let mut packet_codec: mqtt3::proto::PacketCodec = Default::default();
-						let mut bytes = bytes::BytesMut::new();
-						packet_codec.encode(packet.clone(), &mut bytes).unwrap();
-						TestConnectionStep::Sends((packet, std::io::Cursor::new(bytes)))
+				let (done_send, done_recv) = futures_channel::oneshot::channel();
+
+				(
+					TestConnection {
+						steps,
+						done_send: Some(done_send),
 					},
-				})
-				.collect();
+					done_recv,
+				)
+			})
+			.unzip();
 
-			let (done_send, done_recv) = futures::sync::oneshot::channel();
-
-			connections.push(TestConnection {
-				steps,
-				done_send: Some(done_send),
-			});
-
-			done = Box::new(done.join(done_recv).map(|(_, ())| ()));
-		}
+		let done = futures_util::future::try_join_all(done).map_ok(|_: Vec<()>| ());
 
 		(IoSource(connections.into_iter()), done)
 	}
@@ -67,29 +75,31 @@ impl IoSource {
 
 impl mqtt3::IoSource for IoSource {
 	type Io = TestConnection;
-	type Future = Box<Future<Item = (Self::Io, Option<String>), Error = std::io::Error> + Send>;
+	type Error = std::io::Error;
+	type Future = std::pin::Pin<Box<dyn Future<Output = std::io::Result<(Self::Io, Option<String>)>> + Send>>;
 
 	fn connect(&mut self) -> Self::Future {
 		println!("client is creating new connection");
 
 		if let Some(io) = self.0.next() {
-			Box::new(futures::future::ok((io, None)))
+			Box::pin(async {
+				Ok((io, None))
+			})
 		}
 		else {
 			// The client drops the previous Io (TestConnection) before requesting a new one from the IoSource.
-			// Dropping the TestConnection would have dropped the futures::sync::oneshot::Sender inside it.
+			// Dropping the TestConnection would have dropped the futures_channel::oneshot::Sender inside it.
 			//
 			// If the client is requesting a new Io because the last TestConnection ran out of steps and broke the previous connection,
 			// then that TestConnection would've already used its sender to signal the future held by the test.
 			// We can just delay a bit here till the test receives the signal and exits.
 			//
 			// If the connection broke while there were still steps remaining in the TestConnection, then the dropped sender will cause the test
-			// to receive a futures::sync::oneshot::Canceled error, so the test will panic before this deadline elapses anyway.
-			Box::new(tokio::timer::Delay::new(std::time::Instant::now() + std::time::Duration::from_secs(5))
-			.then(|result| -> std::io::Result<_> {
-				let _ = result.unwrap();
+			// to receive a futures_channel::oneshot::Canceled error, so the test will panic before this deadline elapses anyway.
+			Box::pin(async {
+				let () = tokio::time::delay_for(std::time::Duration::from_secs(5)).await;
 				unreachable!();
-			}))
+			})
 		}
 	}
 }
@@ -101,7 +111,7 @@ pub(crate) struct TestConnection {
 		(mqtt3::proto::Packet, bytes::BytesMut),
 		(mqtt3::proto::Packet, std::io::Cursor<bytes::BytesMut>),
 	>>,
-	done_send: Option<futures::sync::oneshot::Sender<()>>,
+	done_send: Option<futures_channel::oneshot::Sender<()>>,
 }
 
 /// A single step in the connection between a client and a server
@@ -111,19 +121,19 @@ pub(crate) enum TestConnectionStep<TReceives, TSends> {
 	Sends(TSends),
 }
 
-impl std::io::Read for TestConnection {
-	fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+impl tokio::io::AsyncRead for TestConnection {
+	fn poll_read(mut self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>, buf: &mut [u8]) -> std::task::Poll<std::io::Result<usize>> {
 		let (read, step_done) = match self.steps.front_mut() {
 			Some(TestConnectionStep::Receives(_)) => {
 				println!("client is reading from server but server wants to receive something first");
 
 				// Since the TestConnection always makes progress with either Read or Write, we don't need to register for wakeup here.
-				return Err(std::io::ErrorKind::WouldBlock.into());
+				return std::task::Poll::Pending;
 			},
 
 			Some(TestConnectionStep::Sends((packet, cursor))) => {
 				println!("server sends {:?}", packet);
-				let read = cursor.read(buf)?;
+				let read = std::io::Read::read(cursor, buf)?;
 				(read, cursor.position() == cursor.get_ref().len() as u64)
 			},
 
@@ -142,16 +152,13 @@ impl std::io::Read for TestConnection {
 
 		println!("client read {} bytes from server", read);
 
-		Ok(read)
+		std::task::Poll::Ready(Ok(read))
 	}
 }
 
-impl tokio::io::AsyncRead for TestConnection {
-}
-
-impl std::io::Write for TestConnection {
-	fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-		use tokio::codec::Decoder;
+impl tokio::io::AsyncWrite for TestConnection {
+	fn poll_write(mut self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>, buf: &[u8]) -> std::task::Poll<std::io::Result<usize>> {
+		use tokio_util::codec::Decoder;
 
 		let (written, step_done) = match self.steps.front_mut() {
 			Some(TestConnectionStep::Receives((expected_packet, bytes))) => {
@@ -183,7 +190,7 @@ impl std::io::Write for TestConnection {
 				println!("client is writing to server but server wants to send something first");
 
 				// Since the TestConnection always makes progress with either Read or Write, we don't need to register for wakeup here.
-				return Err(std::io::ErrorKind::WouldBlock.into());
+				return std::task::Poll::Pending;
 			},
 
 			None => {
@@ -201,16 +208,14 @@ impl std::io::Write for TestConnection {
 
 		println!("client wrote {} bytes to server", written);
 
-		Ok(written)
+		std::task::Poll::Ready(Ok(written))
 	}
 
-	fn flush(&mut self) -> std::io::Result<()> {
-		Ok(())
+	fn poll_flush(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+		std::task::Poll::Ready(Ok(()))
 	}
-}
 
-impl tokio::io::AsyncWrite for TestConnection {
-	fn shutdown(&mut self) -> futures::Poll<(), std::io::Error> {
-		Ok(futures::Async::Ready(()))
+	fn poll_shutdown(self: std::pin::Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+		std::task::Poll::Ready(Ok(()))
 	}
 }

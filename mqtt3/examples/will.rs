@@ -12,11 +12,9 @@
 //     cargo run --example will -- --server 127.0.0.1:1883 --client-id 'example-will-1' --topic foo --qos 1 --payload '"goodbye, world"  - example-will-1'
 //     cargo run --example will -- --server 127.0.0.1:1883 --client-id 'example-will-2' --topic foo --qos 1 --payload '"goodbye, world"  - example-will-2'
 
-use futures::{ Future, Stream };
-
 mod common;
 
-#[derive(Debug, structopt_derive::StructOpt)]
+#[derive(Debug, structopt::StructOpt)]
 struct Options {
 	#[structopt(help = "Address of the MQTT server.", long = "server")]
 	server: std::net::SocketAddr,
@@ -34,7 +32,7 @@ struct Options {
 		help = "Maximum back-off time between reconnections to the server, in seconds.",
 		long = "max-reconnect-back-off",
 		default_value = "30",
-		parse(try_from_str = "common::duration_from_secs_str"),
+		parse(try_from_str = common::duration_from_secs_str),
 	)]
 	max_reconnect_back_off: std::time::Duration,
 
@@ -42,14 +40,14 @@ struct Options {
 		help = "Keep-alive time advertised to the server, in seconds.",
 		long = "keep-alive",
 		default_value = "5",
-		parse(try_from_str = "common::duration_from_secs_str"),
+		parse(try_from_str = common::duration_from_secs_str),
 	)]
 	keep_alive: std::time::Duration,
 
 	#[structopt(help = "The topic of the will.", long = "topic")]
 	topic: String,
 
-	#[structopt(help = "The QoS of the will.", long = "qos", parse(try_from_str = "common::qos_from_str"))]
+	#[structopt(help = "The QoS of the will.", long = "qos", parse(try_from_str = common::qos_from_str))]
 	qos: mqtt3::proto::QoS,
 
 	#[structopt(help = "The payload of the will.", long = "payload")]
@@ -80,50 +78,54 @@ fn main() {
 		payload: payload.into(),
 	};
 
-	let client =
+	let mut client =
 		mqtt3::Client::new(
 			client_id,
 			username,
 			Some(will),
 			move || {
 				let password = password.clone();
-				tokio::net::TcpStream::connect(&server).map(|io| (io, password))
+				Box::pin(async move {
+					let io = tokio::net::TcpStream::connect(&server).await;
+					io.map(|io| (io, password))
+				})
 			},
 			max_reconnect_back_off,
 			keep_alive,
 		);
 
-	let mut update_subscription_handle = client.update_subscription_handle().expect("couldn't get subscription update handle");;
-	runtime.spawn(
-		update_subscription_handle
-		.subscribe(mqtt3::proto::SubscribeTo {
-			topic_filter: topic,
-			qos,
-		})
-		.map_err(|err| panic!("couldn't update subscription: {}", err)));
-
-	let f = client.for_each(|event| {
-		if let mqtt3::Event::Publication(publication) = event {
-			match std::str::from_utf8(&publication.payload) {
-				Ok(s) =>
-					log::info!(
-						"Received publication: {:?} {:?} {:?}",
-						publication.topic_name,
-						s,
-						publication.qos,
-					),
-				Err(_) =>
-					log::info!(
-						"Received publication: {:?} {:?} {:?}",
-						publication.topic_name,
-						publication.payload,
-						publication.qos,
-					),
-			}
+	let mut update_subscription_handle = client.update_subscription_handle().expect("couldn't get subscription update handle");
+	runtime.spawn(async move {
+		let result = update_subscription_handle.subscribe(mqtt3::proto::SubscribeTo { topic_filter: topic, qos }).await;
+		if let Err(err) = result {
+			panic!("couldn't update subscription: {}", err);
 		}
-
-		Ok(())
 	});
 
-	runtime.block_on(f).expect("will failed");
+	let () = runtime.block_on(async move {
+		use futures_util::StreamExt;
+
+		while let Some(event) = client.next().await {
+			let event = event.unwrap();
+
+			if let mqtt3::Event::Publication(publication) = event {
+				match std::str::from_utf8(&publication.payload) {
+					Ok(s) =>
+						log::info!(
+							"Received publication: {:?} {:?} {:?}",
+							publication.topic_name,
+							s,
+							publication.qos,
+						),
+					Err(_) =>
+						log::info!(
+							"Received publication: {:?} {:?} {:?}",
+							publication.topic_name,
+							publication.payload,
+							publication.qos,
+						),
+				}
+			}
+		}
+	});
 }

@@ -1,7 +1,7 @@
 pub(crate) mod desired;
 
 pub(crate) mod reported;
-pub use self::reported::{ ReportTwinStateHandle, ReportTwinStateRequest };
+pub use reported::{ ReportTwinStateHandle, ReportTwinStateRequest };
 
 /// The full twin state stored in the Azure IoT Hub.
 #[derive(Debug, serde_derive::Deserialize)]

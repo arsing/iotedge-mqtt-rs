@@ -4,6 +4,8 @@ This repository contains:
 
 - `azure-iot-mqtt`: An Azure IoT client library in Rust for devices, modules and edge modules.
 
+- `hyper-uds`: A Unix Domain Socket connector for `hyper`. Used by `azure-iot-mqtt`'s IoT Edge module client.
+
 See the READMEs inside the respective directories for more details.
 
 

@@ -1,4 +1,4 @@
-use futures::Future;
+use std::future::Future;
 
 #[derive(Debug)]
 pub(crate) struct State {
@@ -13,13 +13,13 @@ pub(crate) struct State {
 enum Inner {
 	BeginBackOff,
 
-	EndBackOff(tokio_timer::Delay),
+	EndBackOff(tokio::time::Delay),
 
 	SendRequest,
 
 	WaitingForResponse {
 		request_id: u8,
-		timeout: tokio_timer::Delay,
+		timeout: tokio::time::Delay,
 	},
 
 	HaveResponse {
@@ -48,6 +48,8 @@ impl State {
 	)]
 	pub(crate) fn poll(
 		&mut self,
+		cx: &mut std::task::Context<'_>,
+
 		client: &mut mqtt3::Client<crate::IoSource>,
 
 		message: &mut Option<super::InternalTwinStateMessage>,
@@ -65,15 +67,14 @@ impl State {
 
 					back_off => {
 						log::debug!("Backing off for {:?}", back_off);
-						let back_off_deadline = std::time::Instant::now() + back_off;
 						self.current_back_off = std::cmp::min(self.max_back_off, self.current_back_off * 2);
-						self.inner = Inner::EndBackOff(tokio_timer::Delay::new(back_off_deadline));
+						self.inner = Inner::EndBackOff(tokio::time::delay_for(back_off));
 					},
 				},
 
-				Inner::EndBackOff(back_off_timer) => match back_off_timer.poll().expect("could not poll back-off timer") {
-					futures::Async::Ready(()) => self.inner = Inner::SendRequest,
-					futures::Async::NotReady => (),
+				Inner::EndBackOff(back_off_timer) => match std::pin::Pin::new(back_off_timer).poll(cx) {
+					std::task::Poll::Ready(()) => self.inner = Inner::SendRequest,
+					std::task::Poll::Pending => (),
 				},
 
 				Inner::SendRequest => {
@@ -91,8 +92,7 @@ impl State {
 						payload: Default::default(),
 					});
 
-					let deadline = std::time::Instant::now() + 2 * self.keep_alive;
-					let timeout = tokio_timer::Delay::new(deadline);
+					let timeout = tokio::time::delay_for(2 * self.keep_alive);
 					self.inner = Inner::WaitingForResponse { request_id, timeout };
 					return Ok(super::Response::Continue);
 				},
@@ -129,13 +129,13 @@ impl State {
 						}
 					}
 
-					match timeout.poll().expect("could not poll initial twin state response timeout timer") {
-						futures::Async::Ready(()) => {
+					match std::pin::Pin::new(timeout).poll(cx) {
+						std::task::Poll::Ready(()) => {
 							log::warn!("timed out waiting for initial twin state response");
 							self.inner = Inner::SendRequest;
 						},
 
-						futures::Async::NotReady => return Ok(super::Response::NotReady),
+						std::task::Poll::Pending => return Ok(super::Response::NotReady),
 					}
 				},
 

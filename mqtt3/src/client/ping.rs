@@ -1,22 +1,24 @@
-use futures::Future;
+use std::future::Future;
 
 pub(super) enum State {
 	BeginWaitingForNextPing,
-	WaitingForNextPing(tokio_timer::Delay),
+	WaitingForNextPing(tokio::time::Delay),
 }
 
 impl State {
 	pub(super) fn poll(
 		&mut self,
+		cx: &mut std::task::Context<'_>,
+
 		packet: &mut Option<crate::proto::Packet>,
 		keep_alive: std::time::Duration,
-	) -> futures::Poll<crate::proto::Packet, super::Error> {
+	) -> Option<crate::proto::Packet> {
 		if let Some(crate::proto::Packet::PingResp(crate::proto::PingResp)) = packet {
 			let _ = packet.take();
 
 			match self {
 				State::BeginWaitingForNextPing => (),
-				State::WaitingForNextPing(ping_timer) => ping_timer.reset(deadline(std::time::Instant::now(), keep_alive)),
+				State::WaitingForNextPing(ping_timer) => ping_timer.reset(deadline(tokio::time::Instant::now(), keep_alive)),
 			}
 		}
 
@@ -25,18 +27,17 @@ impl State {
 
 			match self {
 				State::BeginWaitingForNextPing => {
-					let ping_timer = tokio_timer::Delay::new(deadline(std::time::Instant::now(), keep_alive));
+					let ping_timer = tokio::time::delay_for(keep_alive);
 					*self = State::WaitingForNextPing(ping_timer);
 				},
 
-				State::WaitingForNextPing(ping_timer) => match ping_timer.poll().map_err(super::Error::PingTimer)? {
-					futures::Async::Ready(()) => {
+				State::WaitingForNextPing(ping_timer) => match std::pin::Pin::new(&mut *ping_timer).poll(cx) {
+					std::task::Poll::Ready(()) => {
 						ping_timer.reset(deadline(ping_timer.deadline(), keep_alive));
-						return Ok(futures::Async::Ready(crate::proto::Packet::PingReq(crate::proto::PingReq)));
+						return Some(crate::proto::Packet::PingReq(crate::proto::PingReq));
 					},
 
-					futures::Async::NotReady =>
-						return Ok(futures::Async::NotReady),
+					std::task::Poll::Pending => return None,
 				},
 			}
 		}
@@ -56,6 +57,6 @@ impl std::fmt::Debug for State {
 	}
 }
 
-fn deadline(now: std::time::Instant, keep_alive: std::time::Duration) -> std::time::Instant {
+fn deadline(now: tokio::time::Instant, keep_alive: std::time::Duration) -> tokio::time::Instant {
 	now + keep_alive / 2
 }

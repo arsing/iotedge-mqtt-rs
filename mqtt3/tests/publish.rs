@@ -2,7 +2,7 @@ mod common;
 
 #[test]
 fn server_publishes_at_most_once() {
-	let mut runtime = tokio::runtime::current_thread::Runtime::new().expect("couldn't initialize tokio runtime");
+	let mut runtime = tokio::runtime::Builder::new().basic_scheduler().enable_time().build().expect("couldn't initialize tokio runtime");
 
 	let (io_source, done) = common::IoSource::new(vec![
 		vec![
@@ -75,12 +75,12 @@ fn server_publishes_at_most_once() {
 		}),
 	]);
 
-	runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
+	let () = runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
 }
 
 #[test]
 fn server_publishes_at_least_once() {
-	let mut runtime = tokio::runtime::current_thread::Runtime::new().expect("couldn't initialize tokio runtime");
+	let mut runtime = tokio::runtime::Builder::new().basic_scheduler().enable_time().build().expect("couldn't initialize tokio runtime");
 
 	let (io_source, done) = common::IoSource::new(vec![
 		vec![
@@ -157,12 +157,12 @@ fn server_publishes_at_least_once() {
 		}),
 	]);
 
-	runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
+	let () = runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
 }
 
 #[test]
 fn server_publishes_at_least_once_with_reconnect_before_publish() {
-	let mut runtime = tokio::runtime::current_thread::Runtime::new().expect("couldn't initialize tokio runtime");
+	let mut runtime = tokio::runtime::Builder::new().basic_scheduler().enable_time().build().expect("couldn't initialize tokio runtime");
 
 	let (io_source, done) = common::IoSource::new(vec![
 		vec![
@@ -271,12 +271,12 @@ fn server_publishes_at_least_once_with_reconnect_before_publish() {
 		}),
 	]);
 
-	runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
+	let () = runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
 }
 
 #[test]
 fn server_publishes_at_least_once_with_reconnect_before_ack() {
-	let mut runtime = tokio::runtime::current_thread::Runtime::new().expect("couldn't initialize tokio runtime");
+	let mut runtime = tokio::runtime::Builder::new().basic_scheduler().enable_time().build().expect("couldn't initialize tokio runtime");
 
 	let (io_source, done) = common::IoSource::new(vec![
 		vec![
@@ -399,12 +399,12 @@ fn server_publishes_at_least_once_with_reconnect_before_ack() {
 		}),
 	]);
 
-	runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
+	let () = runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
 }
 
 #[test]
 fn should_reject_invalid_publications() {
-	let mut runtime = tokio::runtime::current_thread::Runtime::new().expect("couldn't initialize tokio runtime");
+	let mut runtime = tokio::runtime::Builder::new().basic_scheduler().enable_time().build().expect("couldn't initialize tokio runtime");
 
 	let (io_source, done) = common::IoSource::new(vec![
 		vec![
@@ -454,7 +454,7 @@ fn should_reject_invalid_publications() {
 		mqtt3::Event::NewConnection { reset_session: true },
 	]);
 
-	runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
+	let () = runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
 	match runtime.block_on(publish_future) {
 		Err(mqtt3::PublishError::EncodePacket(_, mqtt3::proto::EncodeError::StringTooLarge(_))) => (),
 		result => panic!("expected client.publish() to fail with EncodePacket(StringTooLarge) but it returned {:?}", result),

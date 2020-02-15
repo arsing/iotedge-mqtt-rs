@@ -1,7 +1,5 @@
 //! This module contains the module client and module message types.
 
-use futures::Stream;
-
 /// A client for the Azure IoT Hub MQTT protocol. This client receives module-level messages.
 ///
 /// A `Client` is a [`Stream`] of [`Message`]s. These messages contain twin state messages and direct method requests.
@@ -18,8 +16,8 @@ pub struct Client {
 	desired_properties: crate::twin_state::desired::State,
 	reported_properties: crate::twin_state::reported::State,
 
-	direct_method_response_send: futures::sync::mpsc::Sender<crate::DirectMethodResponse>,
-	direct_method_response_recv: futures::sync::mpsc::Receiver<crate::DirectMethodResponse>,
+	direct_method_response_send: futures_channel::mpsc::Sender<crate::DirectMethodResponse>,
+	direct_method_response_recv: futures_channel::mpsc::Receiver<crate::DirectMethodResponse>,
 }
 
 #[derive(Debug)]
@@ -94,7 +92,7 @@ impl Client {
 			keep_alive,
 		)?;
 
-		let (direct_method_response_send, direct_method_response_recv) = futures::sync::mpsc::channel(0);
+		let (direct_method_response_send, direct_method_response_recv) = futures_channel::mpsc::channel(0);
 
 		Ok(Client {
 			inner,
@@ -189,15 +187,16 @@ impl Client {
 	}
 }
 
-impl Stream for Client {
-	type Item = Message;
-	type Error = mqtt3::Error;
+impl futures_core::Stream for Client {
+	type Item = Result<Message, mqtt3::Error>;
 
-	fn poll(&mut self) -> futures::Poll<Option<Self::Item>, Self::Error> {
+	fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+		let this = &mut *self;
+
 		loop {
-			log::trace!("    {:?}", self.state);
+			log::trace!("    {:?}", this.state);
 
-			while let futures::Async::Ready(Some(direct_method_response)) = self.direct_method_response_recv.poll().expect("Receiver::poll cannot fail") {
+			while let std::task::Poll::Ready(Some(direct_method_response)) = std::pin::Pin::new(&mut this.direct_method_response_recv).poll_next(cx) {
 				let crate::DirectMethodResponse { request_id, status, payload, ack_sender } = direct_method_response;
 				let payload = serde_json::to_vec(&payload).expect("cannot fail to serialize serde_json::Value");
 				let publication = mqtt3::proto::Publication {
@@ -207,20 +206,20 @@ impl Stream for Client {
 					payload: payload.into(),
 				};
 
-				if ack_sender.send(Box::new(self.inner.publish(publication))).is_err() {
+				if ack_sender.send(Box::new(this.inner.publish(publication))).is_err() {
 					log::debug!("could not send ack for direct method response because ack receiver has been dropped");
 				}
 			}
 
-			match &mut self.state {
+			match &mut this.state {
 				State::WaitingForSubscriptions { reset_session, acked } =>
 					if *reset_session {
-						match self.inner.poll()? {
-							futures::Async::Ready(Some(mqtt3::Event::NewConnection { .. })) => (),
+						match std::pin::Pin::new(&mut this.inner).poll_next(cx) {
+							std::task::Poll::Ready(Some(Ok(mqtt3::Event::NewConnection { .. }))) => (),
 
-							futures::Async::Ready(Some(mqtt3::Event::Publication(publication))) => match InternalMessage::parse(publication) {
+							std::task::Poll::Ready(Some(Ok(mqtt3::Event::Publication(publication)))) => match InternalMessage::parse(publication) {
 								Ok(InternalMessage::DirectMethod { name, payload, request_id }) =>
-									return Ok(futures::Async::Ready(Some(Message::DirectMethod { name, payload, request_id }))),
+									return std::task::Poll::Ready(Some(Ok(Message::DirectMethod { name, payload, request_id }))),
 
 								Ok(message @ InternalMessage::TwinState(_)) =>
 									log::debug!("Discarding message {:?} because we haven't finished subscribing yet", message),
@@ -229,38 +228,40 @@ impl Stream for Client {
 									log::warn!("Discarding message that could not be parsed: {}", err),
 							},
 
-							futures::Async::Ready(Some(mqtt3::Event::SubscriptionUpdates(updates))) => {
+							std::task::Poll::Ready(Some(Ok(mqtt3::Event::SubscriptionUpdates(updates)))) => {
 								log::debug!("subscriptions acked by server: {:?}", updates);
 								*acked += updates.len();
-								log::debug!("waiting for {} more subscriptions", self.num_default_subscriptions - *acked);
-								if *acked == self.num_default_subscriptions {
-									self.state = State::Idle;
+								log::debug!("waiting for {} more subscriptions", this.num_default_subscriptions - *acked);
+								if *acked == this.num_default_subscriptions {
+									this.state = State::Idle;
 								}
 							},
 
-							futures::Async::Ready(None) => return Ok(futures::Async::Ready(None)),
+							std::task::Poll::Ready(Some(Err(err))) => return std::task::Poll::Ready(Some(Err(err))),
 
-							futures::Async::NotReady => return Ok(futures::Async::NotReady),
+							std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
+
+							std::task::Poll::Pending => return std::task::Poll::Pending,
 						}
 					}
 					else {
-						self.state = State::Idle;
+						this.state = State::Idle;
 					},
 
 				State::Idle => {
 					let mut continue_loop = false;
 
-					let mut twin_state_message = match self.inner.poll()? {
-						futures::Async::Ready(Some(mqtt3::Event::NewConnection { reset_session })) => {
-							self.state = State::WaitingForSubscriptions { reset_session, acked: 0 };
-							self.desired_properties.new_connection();
-							self.reported_properties.new_connection();
+					let mut twin_state_message = match std::pin::Pin::new(&mut this.inner).poll_next(cx) {
+						std::task::Poll::Ready(Some(Ok(mqtt3::Event::NewConnection { reset_session }))) => {
+							this.state = State::WaitingForSubscriptions { reset_session, acked: 0 };
+							this.desired_properties.new_connection();
+							this.reported_properties.new_connection();
 							continue;
 						},
 
-						futures::Async::Ready(Some(mqtt3::Event::Publication(publication))) => match InternalMessage::parse(publication) {
+						std::task::Poll::Ready(Some(Ok(mqtt3::Event::Publication(publication)))) => match InternalMessage::parse(publication) {
 							Ok(InternalMessage::DirectMethod { name, payload, request_id }) =>
-								return Ok(futures::Async::Ready(Some(Message::DirectMethod { name, payload, request_id }))),
+								return std::task::Poll::Ready(Some(Ok(Message::DirectMethod { name, payload, request_id }))),
 
 							Ok(InternalMessage::TwinState(message)) => {
 								// There may be more messages, so continue the loop
@@ -276,21 +277,23 @@ impl Stream for Client {
 						},
 
 						// Don't expect any subscription updates at this point
-						futures::Async::Ready(Some(mqtt3::Event::SubscriptionUpdates(_))) => unreachable!(),
+						std::task::Poll::Ready(Some(Ok(mqtt3::Event::SubscriptionUpdates(_)))) => unreachable!(),
 
-						futures::Async::Ready(None) => return Ok(futures::Async::Ready(None)),
+						std::task::Poll::Ready(Some(Err(err))) => return std::task::Poll::Ready(Some(Err(err))),
 
-						futures::Async::NotReady => None,
+						std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
+
+						std::task::Poll::Pending => None,
 					};
 
-					match self.desired_properties.poll(&mut self.inner, &mut twin_state_message, &mut self.previous_request_id) {
+					match this.desired_properties.poll(cx, &mut this.inner, &mut twin_state_message, &mut this.previous_request_id) {
 						Ok(crate::twin_state::Response::Message(crate::twin_state::desired::Message::Initial(twin_state))) => {
-							self.reported_properties.set_initial_state(twin_state.reported.properties.clone());
-							return Ok(futures::Async::Ready(Some(Message::TwinInitial(twin_state))));
+							this.reported_properties.set_initial_state(twin_state.reported.properties.clone());
+							return std::task::Poll::Ready(Some(Ok(Message::TwinInitial(twin_state))));
 						},
 
 						Ok(crate::twin_state::Response::Message(crate::twin_state::desired::Message::Patch(properties))) =>
-							return Ok(futures::Async::Ready(Some(Message::TwinPatch(properties)))),
+							return std::task::Poll::Ready(Some(Ok(Message::TwinPatch(properties)))),
 
 						Ok(crate::twin_state::Response::Continue) => continue_loop = true,
 
@@ -299,10 +302,10 @@ impl Stream for Client {
 						Err(err) => log::warn!("Discarding message that could not be parsed: {}", err),
 					}
 
-					match self.reported_properties.poll(&mut self.inner, &mut twin_state_message, &mut self.previous_request_id) {
+					match this.reported_properties.poll(cx, &mut this.inner, &mut twin_state_message, &mut this.previous_request_id) {
 						Ok(crate::twin_state::Response::Message(message)) => match message {
 							crate::twin_state::reported::Message::Reported(version) =>
-								return Ok(futures::Async::Ready(Some(Message::ReportedTwinState(version)))),
+								return std::task::Poll::Ready(Some(Ok(Message::ReportedTwinState(version)))),
 						},
 						Ok(crate::twin_state::Response::Continue) => continue_loop = true,
 						Ok(crate::twin_state::Response::NotReady) => (),
@@ -316,7 +319,7 @@ impl Stream for Client {
 					}
 
 					if !continue_loop {
-						return Ok(futures::Async::NotReady);
+						return std::task::Poll::Pending;
 					}
 				},
 			}

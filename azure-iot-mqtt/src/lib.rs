@@ -3,34 +3,36 @@
 #![deny(rust_2018_idioms, warnings)]
 #![deny(clippy::all, clippy::pedantic)]
 #![allow(
-	clippy::cyclomatic_complexity,
+	clippy::cognitive_complexity,
 	clippy::default_trait_access,
 	clippy::doc_markdown,
 	clippy::large_enum_variant,
+	clippy::missing_errors_doc,
 	clippy::module_name_repetitions,
 	clippy::pub_enum_variant_names,
 	clippy::similar_names,
 	clippy::single_match_else,
 	clippy::too_many_arguments,
+	clippy::too_many_lines,
 	clippy::use_self,
 )]
 
-use futures::{ Future, Sink };
+use std::future::Future;
 
 pub mod device;
 
 mod io;
-pub use self::io::{ Io, IoSource, Transport };
+pub use io::{ Io, IoSource, Transport };
 
 mod iotedge_client;
 
 pub mod module;
 
 mod system_properties;
-pub use self::system_properties::{ IotHubAck, SystemProperties };
+pub use system_properties::{ IotHubAck, SystemProperties };
 
 mod twin_state;
-pub use self::twin_state::{ ReportTwinStateHandle, ReportTwinStateRequest, TwinProperties, TwinState };
+pub use twin_state::{ ReportTwinStateHandle, ReportTwinStateRequest, TwinProperties, TwinState };
 
 /// The type of authentication the client should use to connect to the Azure IoT Hub
 pub enum Authentication {
@@ -77,7 +79,7 @@ pub enum CreateClientError {
 	InvalidDefaultSubscription(mqtt3::UpdateSubscriptionError),
 	ParseEnvironmentVariable(&'static str, Box<dyn std::error::Error>),
 	ResolveIotHubHostname(Option<std::io::Error>),
-	WebSocketUrl(url::ParseError),
+	WebSocketUrl(<http::Uri as std::str::FromStr>::Err),
 }
 
 impl std::fmt::Display for CreateClientError {
@@ -105,27 +107,21 @@ impl std::error::Error for CreateClientError {
 }
 
 /// Used to respond to direct methods
-pub struct DirectMethodResponseHandle(futures::sync::mpsc::Sender<DirectMethodResponse>);
+#[derive(Clone)]
+pub struct DirectMethodResponseHandle(futures_channel::mpsc::Sender<DirectMethodResponse>);
 
 impl DirectMethodResponseHandle {
 	/// Send a direct method response with the given parameters
-	pub fn respond(&self, request_id: String, status: crate::Status, payload: serde_json::Value) -> impl Future<Item = (), Error = DirectMethodResponseError> {
-		let (ack_sender, ack_receiver) = futures::sync::oneshot::channel();
-		let ack_receiver = ack_receiver.map_err(|_| DirectMethodResponseError::ClientDoesNotExist);
+	pub async fn respond(&mut self, request_id: String, status: crate::Status, payload: serde_json::Value) -> Result<(), DirectMethodResponseError> {
+		use futures_util::SinkExt;
 
-		self.0.clone()
-			.send(DirectMethodResponse {
-				request_id,
-				status,
-				payload,
-				ack_sender,
-			})
-			.then(|result| match result {
-				Ok(_) => Ok(()),
-				Err(_) => Err(DirectMethodResponseError::ClientDoesNotExist),
-			})
-			.and_then(|()| ack_receiver)
-			.and_then(|publish| publish.map_err(|_| DirectMethodResponseError::ClientDoesNotExist))
+		let (ack_sender, ack_receiver) = futures_channel::oneshot::channel();
+
+		let direct_method_response = DirectMethodResponse { request_id, status, payload, ack_sender };
+		self.0.send(direct_method_response).await.map_err(|_| DirectMethodResponseError::ClientDoesNotExist)?;
+		let publish = ack_receiver.await.map_err(|_| DirectMethodResponseError::ClientDoesNotExist)?;
+		publish.await.map_err(|_| DirectMethodResponseError::ClientDoesNotExist)?;
+		Ok(())
 	}
 }
 
@@ -149,7 +145,7 @@ struct DirectMethodResponse {
 	request_id: String,
 	status: crate::Status,
 	payload: serde_json::Value,
-	ack_sender: futures::sync::oneshot::Sender<Box<dyn Future<Item = (), Error = mqtt3::PublishError> + Send>>,
+	ack_sender: futures_channel::oneshot::Sender<Box<dyn Future<Output = Result<(), mqtt3::PublishError>> + Send + Unpin>>,
 }
 
 /// Represents the status code used in initial twin responses and device method responses

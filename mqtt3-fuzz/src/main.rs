@@ -1,9 +1,10 @@
 ///     rm -rf out/ && cargo afl build && cargo afl fuzz -i in -o out target/debug/mqtt3-fuzz
 
-use tokio::codec::{ Decoder, Encoder };
+use bytes::Buf;
+use tokio_util::codec::{ Decoder, Encoder };
 
 fn main() {
-	afl::fuzz(|data| {
+	afl::fuzz(true, |data| {
 		let mut codec: mqtt3::proto::PacketCodec = Default::default();
 
 		let mut bytes: bytes::BytesMut = data.into();

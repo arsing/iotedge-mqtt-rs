@@ -1,15 +1,15 @@
-use futures::{ Future, IntoFuture, Sink, Stream };
+use std::future::Future;
 
 #[derive(Debug)]
 pub(super) struct State {
-	publish_request_send: futures::sync::mpsc::Sender<PublishRequest>,
-	publish_request_recv: futures::sync::mpsc::Receiver<PublishRequest>,
+	publish_request_send: futures_channel::mpsc::Sender<PublishRequest>,
+	publish_request_recv: futures_channel::mpsc::Receiver<PublishRequest>,
 
 	publish_requests_waiting_to_be_sent: std::collections::VecDeque<PublishRequest>,
 
 	/// Holds PUBLISH packets sent by us, waiting for a corresponding PUBACK or PUBREC
 	waiting_to_be_acked:
-		std::collections::BTreeMap<crate::proto::PacketIdentifier, (futures::sync::oneshot::Sender<()>, crate::proto::Publish)>,
+		std::collections::BTreeMap<crate::proto::PacketIdentifier, (futures_channel::oneshot::Sender<()>, crate::proto::Publish)>,
 
 	/// Holds the identifiers of PUBREC packets sent by us, waiting for a corresponding PUBREL,
 	/// and the contents of the original PUBLISH packet for which we sent the PUBREC
@@ -18,15 +18,19 @@ pub(super) struct State {
 
 	/// Holds PUBLISH packets sent by us, waiting for a corresponding PUBCOMP
 	waiting_to_be_completed:
-		std::collections::BTreeMap<crate::proto::PacketIdentifier, (futures::sync::oneshot::Sender<()>, crate::proto::Publish)>,
+		std::collections::BTreeMap<crate::proto::PacketIdentifier, (futures_channel::oneshot::Sender<()>, crate::proto::Publish)>,
 }
 
 impl State {
 	pub(super) fn poll(
 		&mut self,
+		cx: &mut std::task::Context<'_>,
+
 		packet: &mut Option<crate::proto::Packet>,
 		packet_identifiers: &mut super::PacketIdentifiers,
 	) -> Result<(Vec<crate::proto::Packet>, Option<crate::ReceivedPublication>), super::Error> {
+		use futures_core::Stream;
+
 		let mut packets_waiting_to_be_sent = vec![];
 		let mut publication_received = None;
 
@@ -139,7 +143,7 @@ impl State {
 		}
 
 
-		while let futures::Async::Ready(Some(publish_request)) = self.publish_request_recv.poll().expect("Receiver::poll cannot fail") {
+		while let std::task::Poll::Ready(Some(publish_request)) = std::pin::Pin::new(&mut self.publish_request_recv).poll_next(cx) {
 			self.publish_requests_waiting_to_be_sent.push_back(publish_request);
 		}
 
@@ -239,15 +243,17 @@ impl State {
 		.chain(self.waiting_to_be_completed.values().map(|(_, packet)| crate::proto::Packet::Publish(packet.clone())))
 	}
 
-	pub(super) fn publish(&mut self, publication: crate::proto::Publication) -> impl Future<Item = (), Error = PublishError> {
-		let (ack_sender, ack_receiver) = futures::sync::oneshot::channel();
+	pub(super) fn publish(&mut self, publication: crate::proto::Publication) -> impl Future<Output = Result<(), PublishError>> {
+		let (ack_sender, ack_receiver) = futures_channel::oneshot::channel();
 		match PublishRequest::new(publication, ack_sender) {
 			Ok(publish_request) => {
+				use futures_util::TryFutureExt;
+
 				self.publish_requests_waiting_to_be_sent.push_back(publish_request);
-				futures::future::Either::A(ack_receiver.map_err(|_| PublishError::ClientDoesNotExist))
+				futures_util::future::Either::Left(ack_receiver.map_err(|_| PublishError::ClientDoesNotExist))
 			},
 
-			Err(err) => futures::future::Either::B(futures::future::err(err)),
+			Err(err) => futures_util::future::Either::Right(futures_util::future::err(err)),
 		}
 	}
 
@@ -258,7 +264,7 @@ impl State {
 
 impl Default for State {
 	fn default() -> Self {
-		let (publish_request_send, publish_request_recv) = futures::sync::mpsc::channel(0);
+		let (publish_request_send, publish_request_recv) = futures_channel::mpsc::channel(0);
 
 		State {
 			publish_request_send,
@@ -273,18 +279,20 @@ impl Default for State {
 }
 
 /// Used to publish messages to the server
-pub struct PublishHandle(futures::sync::mpsc::Sender<PublishRequest>);
+#[derive(Clone)]
+pub struct PublishHandle(futures_channel::mpsc::Sender<PublishRequest>);
 
 impl PublishHandle {
 	/// Publish the given message to the server
-	pub fn publish(&mut self, publication: crate::proto::Publication) -> impl Future<Item = (), Error = PublishError> {
-		let (ack_sender, ack_receiver) = futures::sync::oneshot::channel();
+	pub async fn publish(&mut self, publication: crate::proto::Publication) -> Result<(), PublishError> {
+		use futures_util::SinkExt;
 
-		let sender = self.0.clone();
-		PublishRequest::new(publication, ack_sender)
-			.into_future()
-			.and_then(|publish_request| sender.send(publish_request).map_err(|_| PublishError::ClientDoesNotExist))
-			.and_then(|_| ack_receiver.map_err(|_| PublishError::ClientDoesNotExist))
+		let (ack_sender, ack_receiver) = futures_channel::oneshot::channel();
+
+		let publish_request = PublishRequest::new(publication, ack_sender)?;
+		self.0.send(publish_request).await.map_err(|_| PublishError::ClientDoesNotExist)?;
+		ack_receiver.await.map_err(|_| PublishError::ClientDoesNotExist)?;
+		Ok(())
 	}
 }
 
@@ -315,11 +323,11 @@ impl std::error::Error for PublishError {
 #[derive(Debug)]
 struct PublishRequest {
 	publication: crate::proto::Publication,
-	ack_sender: futures::sync::oneshot::Sender<()>,
+	ack_sender: futures_channel::oneshot::Sender<()>,
 }
 
 impl PublishRequest {
-	fn new(publication: crate::proto::Publication, ack_sender: futures::sync::oneshot::Sender<()>) -> Result<PublishRequest, PublishError> {
+	fn new(publication: crate::proto::Publication, ack_sender: futures_channel::oneshot::Sender<()>) -> Result<PublishRequest, PublishError> {
 		use crate::proto::PacketMeta;
 
 		let packet = crate::proto::Publish {

@@ -1,4 +1,4 @@
-use futures::{ Future, Sink, Stream };
+use std::future::Future;
 
 #[derive(Debug)]
 pub(crate) struct State {
@@ -7,11 +7,11 @@ pub(crate) struct State {
 
 	keep_alive: std::time::Duration,
 
-	report_twin_state_send: futures::sync::mpsc::Sender<ReportTwinStateRequest>,
-	report_twin_state_recv: futures::sync::mpsc::Receiver<ReportTwinStateRequest>,
+	report_twin_state_send: futures_channel::mpsc::Sender<ReportTwinStateRequest>,
+	report_twin_state_recv: futures_channel::mpsc::Receiver<ReportTwinStateRequest>,
 	previous_twin_state: Option<std::collections::HashMap<String, serde_json::Value>>,
 	current_twin_state: std::collections::HashMap<String, serde_json::Value>,
-	pending_response: Option<(u8, tokio_timer::Delay)>,
+	pending_response: Option<(u8, tokio::time::Delay)>,
 
 	inner: Inner,
 }
@@ -19,7 +19,7 @@ pub(crate) struct State {
 enum Inner {
 	BeginBackOff,
 
-	EndBackOff(tokio_timer::Delay),
+	EndBackOff(tokio::time::Delay),
 
 	Idle,
 
@@ -31,7 +31,7 @@ impl State {
 		max_back_off: std::time::Duration,
 		keep_alive: std::time::Duration,
 	) -> Self {
-		let (report_twin_state_send, report_twin_state_recv) = futures::sync::mpsc::channel(0);
+		let (report_twin_state_send, report_twin_state_recv) = futures_channel::mpsc::channel(0);
 
 		State {
 			max_back_off,
@@ -55,11 +55,15 @@ impl State {
 	)]
 	pub(crate) fn poll(
 		&mut self,
+		cx: &mut std::task::Context<'_>,
+
 		client: &mut mqtt3::Client<crate::IoSource>,
 
 		message: &mut Option<super::InternalTwinStateMessage>,
 		previous_request_id: &mut u8,
 	) -> Result<super::Response<Message>, super::MessageParseError> {
+		use futures_core::Stream;
+
 		loop {
 			log::trace!("    {:?}", self.inner);
 
@@ -72,21 +76,20 @@ impl State {
 
 					back_off => {
 						log::debug!("Backing off for {:?}", back_off);
-						let back_off_deadline = std::time::Instant::now() + back_off;
 						self.current_back_off = std::cmp::min(self.max_back_off, self.current_back_off * 2);
-						self.inner = Inner::EndBackOff(tokio_timer::Delay::new(back_off_deadline));
+						self.inner = Inner::EndBackOff(tokio::time::delay_for(back_off));
 					},
 				},
 
-				Inner::EndBackOff(back_off_timer) => match back_off_timer.poll().expect("could not poll back-off timer") {
-					futures::Async::Ready(()) => self.inner = Inner::SendRequest,
-					futures::Async::NotReady => (),
+				Inner::EndBackOff(back_off_timer) => match std::pin::Pin::new(back_off_timer).poll(cx) {
+					std::task::Poll::Ready(()) => self.inner = Inner::SendRequest,
+					std::task::Poll::Pending => (),
 				},
 
 				Inner::Idle => {
 					let mut current_twin_state_changed = false;
 
-					while let futures::Async::Ready(Some(report_twin_state_request)) = self.report_twin_state_recv.poll().expect("Receiver::poll cannot fail") {
+					while let std::task::Poll::Ready(Some(report_twin_state_request)) = std::pin::Pin::new(&mut self.report_twin_state_recv).poll_next(cx) {
 						match report_twin_state_request {
 							ReportTwinStateRequest::Replace(properties) => self.current_twin_state = properties,
 							ReportTwinStateRequest::Patch(patch) => merge(&mut self.current_twin_state, patch),
@@ -135,13 +138,13 @@ impl State {
 							}
 						}
 
-						match timeout.poll().expect("could not poll report twin state response timeout timer") {
-							futures::Async::Ready(()) => {
+						match std::pin::Pin::new(timeout).poll(cx) {
+							std::task::Poll::Ready(()) => {
 								log::warn!("timed out waiting for report twin state response");
 								self.inner = Inner::SendRequest;
 							},
 
-							futures::Async::NotReady => return Ok(super::Response::NotReady),
+							std::task::Poll::Pending => return Ok(super::Response::NotReady),
 						}
 					}
 					else {
@@ -174,8 +177,7 @@ impl State {
 						payload: payload.into(),
 					});
 
-					let deadline = std::time::Instant::now() + 2 * self.keep_alive;
-					let timeout = tokio_timer::Delay::new(deadline);
+					let timeout = tokio::time::delay_for(2 * self.keep_alive);
 
 					self.pending_response = Some((request_id, timeout));
 
@@ -223,18 +225,15 @@ impl std::fmt::Debug for Inner {
 }
 
 /// Used to report twin state to the Azure IoT Hub
-#[derive(Debug)]
-pub struct ReportTwinStateHandle(futures::sync::mpsc::Sender<ReportTwinStateRequest>);
+#[derive(Clone)]
+pub struct ReportTwinStateHandle(futures_channel::mpsc::Sender<ReportTwinStateRequest>);
 
 impl ReportTwinStateHandle {
 	/// Send a direct method response with the given parameters
-	pub fn report_twin_state(&self, request: ReportTwinStateRequest) -> impl Future<Item = (), Error = ReportTwinStateError> {
-		self.0.clone()
-			.send(request)
-			.then(|result| match result {
-				Ok(_) => Ok(()),
-				Err(_) => Err(ReportTwinStateError::ClientDoesNotExist),
-			})
+	pub async fn report_twin_state(&mut self, request: ReportTwinStateRequest) -> Result<(), ReportTwinStateError> {
+		use futures_util::SinkExt;
+
+		self.0.send(request).await.map_err(|_| ReportTwinStateError::ClientDoesNotExist)
 	}
 }
 

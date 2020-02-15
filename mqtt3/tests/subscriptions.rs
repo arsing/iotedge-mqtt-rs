@@ -2,7 +2,7 @@ mod common;
 
 #[test]
 fn server_generated_id_must_always_resubscribe() {
-	let mut runtime = tokio::runtime::current_thread::Runtime::new().expect("couldn't initialize tokio runtime");
+	let mut runtime = tokio::runtime::Builder::new().basic_scheduler().enable_time().build().expect("couldn't initialize tokio runtime");
 
 	let (io_source, done) = common::IoSource::new(vec![
 		vec![
@@ -114,12 +114,12 @@ fn server_generated_id_must_always_resubscribe() {
 		]),
 	]);
 
-	runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
+	let () = runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
 }
 
 #[test]
 fn client_id_should_not_resubscribe_when_session_is_present() {
-	let mut runtime = tokio::runtime::current_thread::Runtime::new().expect("couldn't initialize tokio runtime");
+	let mut runtime = tokio::runtime::Builder::new().basic_scheduler().enable_time().build().expect("couldn't initialize tokio runtime");
 
 	let (io_source, done) = common::IoSource::new(vec![
 		vec![
@@ -248,12 +248,12 @@ fn client_id_should_not_resubscribe_when_session_is_present() {
 		mqtt3::Event::NewConnection { reset_session: false },
 	]);
 
-	runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
+	let () = runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
 }
 
 #[test]
 fn should_combine_pending_subscription_updates() {
-	let mut runtime = tokio::runtime::current_thread::Runtime::new().expect("couldn't initialize tokio runtime");
+	let mut runtime = tokio::runtime::Builder::new().basic_scheduler().enable_time().build().expect("couldn't initialize tokio runtime");
 
 	let (io_source, done) = common::IoSource::new(vec![
 		vec![
@@ -315,7 +315,7 @@ fn should_combine_pending_subscription_updates() {
 		]),
 	]);
 
-	runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
+	let () = runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
 }
 
 #[test]

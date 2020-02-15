@@ -1,11 +1,9 @@
-use futures::{ Future, IntoFuture, Sink, Stream };
-
 #[derive(Debug)]
 pub(super) struct State {
 	subscriptions: std::collections::BTreeMap<String, crate::proto::QoS>,
 
-	subscriptions_updated_send: futures::sync::mpsc::Sender<SubscriptionUpdate>,
-	subscriptions_updated_recv: futures::sync::mpsc::Receiver<SubscriptionUpdate>,
+	subscriptions_updated_send: futures_channel::mpsc::Sender<SubscriptionUpdate>,
+	subscriptions_updated_recv: futures_channel::mpsc::Receiver<SubscriptionUpdate>,
 
 	subscription_updates_waiting_to_be_sent: std::collections::VecDeque<SubscriptionUpdate>,
 	subscription_updates_waiting_to_be_acked: std::collections::VecDeque<(crate::proto::PacketIdentifier, BatchedSubscriptionUpdate)>,
@@ -14,9 +12,13 @@ pub(super) struct State {
 impl State {
 	pub(super) fn poll(
 		&mut self,
+		cx: &mut std::task::Context<'_>,
+
 		packet: &mut Option<crate::proto::Packet>,
 		packet_identifiers: &mut super::PacketIdentifiers,
 	) -> Result<(Vec<crate::proto::Packet>, Vec<super::SubscriptionUpdateEvent>), super::Error> {
+		use futures_core::Stream;
+
 		let mut subscription_updates = vec![];
 
 		match packet.take() {
@@ -131,7 +133,7 @@ impl State {
 		}
 
 
-		while let futures::Async::Ready(Some(subscription_to_update)) = self.subscriptions_updated_recv.poll().expect("Receiver::poll cannot fail") {
+		while let std::task::Poll::Ready(Some(subscription_to_update)) = std::pin::Pin::new(&mut self.subscriptions_updated_recv).poll_next(cx) {
 			self.subscription_updates_waiting_to_be_sent.push_back(subscription_to_update);
 		}
 
@@ -402,7 +404,7 @@ impl State {
 
 impl Default for State {
 	fn default() -> Self {
-		let (subscriptions_updated_send, subscriptions_updated_recv) = futures::sync::mpsc::channel(0);
+		let (subscriptions_updated_send, subscriptions_updated_recv) = futures_channel::mpsc::channel(0);
 
 		State {
 			subscriptions: Default::default(),
@@ -478,9 +480,11 @@ impl Iterator for NewConnectionIter {
 }
 
 /// Used to update subscriptions
-pub struct UpdateSubscriptionHandle(futures::sync::mpsc::Sender<SubscriptionUpdate>);
+#[derive(Clone)]
+pub struct UpdateSubscriptionHandle(futures_channel::mpsc::Sender<SubscriptionUpdate>);
 
 impl UpdateSubscriptionHandle {
+	#[allow(clippy::doc_markdown)]
 	/// Subscribe to a topic with the given parameters.
 	///
 	/// The [`Future`] returned by this function resolves when the subscription update is received by the client.
@@ -497,12 +501,12 @@ impl UpdateSubscriptionHandle {
 	/// To know when the server has acked the subscription update, wait for the client to send an [`mqtt3::Event::SubscriptionUpdate::Subscribe`] value
 	/// that contains a `mqtt3::proto::SubscribeTo` value with the same topic filter.
 	/// Be careful about using `==` to determine this, since the QoS in the event may be higher than the one requested here.
-	pub fn subscribe(&mut self, subscribe_to: crate::proto::SubscribeTo) -> impl Future<Item = (), Error = UpdateSubscriptionError> {
-		let sender = self.0.clone();
-		SubscriptionUpdate::subscribe(subscribe_to)
-			.into_future()
-			.and_then(|subscription_update| sender.send(subscription_update).map_err(|_| UpdateSubscriptionError::ClientDoesNotExist))
-			.map(|_| ())
+	pub async fn subscribe(&mut self, subscribe_to: crate::proto::SubscribeTo) -> Result<(), UpdateSubscriptionError> {
+		use futures_util::SinkExt;
+
+		let subscription_update = SubscriptionUpdate::subscribe(subscribe_to)?;
+		self.0.send(subscription_update).await.map_err(|_| UpdateSubscriptionError::ClientDoesNotExist)?;
+		Ok(())
 	}
 
 	/// Unsubscribe from the given topic.
@@ -520,12 +524,12 @@ impl UpdateSubscriptionHandle {
 	///
 	/// To know when the server has acked the subscription update, wait for the client to send an [`mqtt3::Event::SubscriptionUpdate::Unsubscribe`] value
 	/// for this topic filter.
-	pub fn unsubscribe(&mut self, unsubscribe_from: String) -> impl Future<Item = (), Error = UpdateSubscriptionError> {
-		let sender = self.0.clone();
-		SubscriptionUpdate::unsubscribe(unsubscribe_from)
-			.into_future()
-			.and_then(|subscription_update| sender.send(subscription_update).map_err(|_| UpdateSubscriptionError::ClientDoesNotExist))
-			.map(|_| ())
+	pub async fn unsubscribe(&mut self, unsubscribe_from: String) -> Result<(), UpdateSubscriptionError> {
+		use futures_util::SinkExt;
+
+		let subscription_update = SubscriptionUpdate::unsubscribe(unsubscribe_from)?;
+		self.0.send(subscription_update).await.map_err(|_| UpdateSubscriptionError::ClientDoesNotExist)?;
+		Ok(())
 	}
 }
 

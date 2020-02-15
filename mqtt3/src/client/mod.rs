@@ -1,12 +1,14 @@
-use futures::{ Future, Sink, Stream };
+use std::future::Future;
 
 mod connect;
-mod ping;
-mod publish;
-mod subscriptions;
 
-pub use self::publish::{ PublishError, PublishHandle };
-pub use self::subscriptions::{ UpdateSubscriptionError, UpdateSubscriptionHandle };
+mod ping;
+
+mod publish;
+pub use publish::{ PublishError, PublishHandle };
+
+mod subscriptions;
+pub use subscriptions::{ UpdateSubscriptionError, UpdateSubscriptionHandle };
 
 /// An MQTT v3.1.1 client.
 ///
@@ -59,7 +61,7 @@ impl<IoS> Client<IoS> where IoS: IoSource {
 			None => crate::proto::ClientId::ServerGenerated,
 		};
 
-		let (shutdown_send, shutdown_recv) = futures::sync::mpsc::channel(0);
+		let (shutdown_send, shutdown_recv) = futures_channel::mpsc::channel(0);
 
 		// TODO: username / password / will can be too large and prevent a CONNECT packet from being encoded.
 		//       `Client::new()` should detect that and retrurn an error.
@@ -76,8 +78,8 @@ impl<IoS> Client<IoS> where IoS: IoSource {
 
 			packet_identifiers: Default::default(),
 
-			connect: self::connect::Connect::new(io_source, max_reconnect_back_off),
-			ping: self::ping::State::BeginWaitingForNextPing,
+			connect: connect::Connect::new(io_source, max_reconnect_back_off),
+			ping: ping::State::BeginWaitingForNextPing,
 			publish: Default::default(),
 			subscriptions: Default::default(),
 
@@ -86,11 +88,11 @@ impl<IoS> Client<IoS> where IoS: IoSource {
 	}
 
 	/// Queues a message to be published to the server
-	pub fn publish(&mut self, publication: crate::proto::Publication) -> impl Future<Item = (), Error = PublishError> {
+	pub fn publish(&mut self, publication: crate::proto::Publication) -> impl Future<Output = Result<(), PublishError>> {
 		match &mut self.0 {
-			ClientState::Up { publish, .. } => futures::future::Either::A(publish.publish(publication)),
+			ClientState::Up { publish, .. } => futures_util::future::Either::Left(publish.publish(publication)),
 			ClientState::ShuttingDown { .. } |
-			ClientState::ShutDown { .. } => futures::future::Either::B(futures::future::err(PublishError::ClientDoesNotExist)),
+			ClientState::ShutDown { .. } => futures_util::future::Either::Right(futures_util::future::err(PublishError::ClientDoesNotExist)),
 		}
 	}
 
@@ -140,11 +142,18 @@ impl<IoS> Client<IoS> where IoS: IoSource {
 	}
 }
 
-impl<IoS> Stream for Client<IoS> where IoS: IoSource, <<IoS as IoSource>::Future as Future>::Error: std::fmt::Display {
-	type Item = Event;
-	type Error = Error;
+impl<IoS> futures_core::Stream for Client<IoS> where
+	Self: Unpin,
+	IoS: IoSource,
+	<IoS as IoSource>::Io: Unpin,
+	<IoS as IoSource>::Error: std::fmt::Display,
+	<IoS as super::IoSource>::Future: Unpin,
+{
+	type Item = Result<Event, Error>;
 
-	fn poll(&mut self) -> futures::Poll<Option<Self::Item>, Self::Error> {
+	fn poll_next(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Option<Self::Item>> {
+		use futures_sink::Sink;
+
 		let reason = loop {
 			match &mut self.0 {
 				ClientState::Up {
@@ -166,22 +175,22 @@ impl<IoS> Stream for Client<IoS> where IoS: IoSource, <<IoS as IoSource>::Future
 
 					..
 				} => {
-					match shutdown_recv.poll().expect("Receiver::poll cannot fail") {
-						futures::Async::Ready(Some(())) => break None,
+					match std::pin::Pin::new(shutdown_recv).poll_next(cx) {
+						std::task::Poll::Ready(Some(())) => break None,
 
-						futures::Async::Ready(None) |
-						futures::Async::NotReady => (),
+						std::task::Poll::Ready(None) |
+						std::task::Poll::Pending => (),
 					}
 
-					let self::connect::Connected { framed, new_connection, reset_session } = match connect.poll(
+					let connect::Connected { framed, new_connection, reset_session } = match connect.poll(
+						cx,
 						username.as_ref().map(AsRef::as_ref),
 						will.as_ref(),
 						client_id,
 						*keep_alive,
 					) {
-						Ok(futures::Async::Ready(framed)) => framed,
-						Ok(futures::Async::NotReady) => return Ok(futures::Async::NotReady),
-						Err(()) => unreachable!(),
+						std::task::Poll::Ready(framed) => framed,
+						std::task::Poll::Pending => return std::task::Poll::Pending,
 					};
 
 					if new_connection {
@@ -195,10 +204,11 @@ impl<IoS> Stream for Client<IoS> where IoS: IoSource, <<IoS as IoSource>::Future
 
 						packets_waiting_to_be_sent.extend(subscriptions.new_connection(reset_session, packet_identifiers));
 
-						return Ok(futures::Async::Ready(Some(Event::NewConnection { reset_session })));
+						return std::task::Poll::Ready(Some(Ok(Event::NewConnection { reset_session })));
 					}
 
 					match client_poll(
+						cx,
 						framed,
 						*keep_alive,
 						packets_waiting_to_be_sent,
@@ -207,9 +217,9 @@ impl<IoS> Stream for Client<IoS> where IoS: IoSource, <<IoS as IoSource>::Future
 						publish,
 						subscriptions,
 					) {
-						Ok(futures::Async::Ready(event)) => return Ok(futures::Async::Ready(Some(event))),
-						Ok(futures::Async::NotReady) => return Ok(futures::Async::NotReady),
-						Err(err) =>
+						std::task::Poll::Ready(Ok(event)) => return std::task::Poll::Ready(Some(Ok(event))),
+
+						std::task::Poll::Ready(Err(err)) =>
 							if err.is_user_error() {
 								break Some(err);
 							}
@@ -230,6 +240,8 @@ impl<IoS> Stream for Client<IoS> where IoS: IoSource, <<IoS as IoSource>::Future
 
 								connect.reconnect();
 							},
+
+						std::task::Poll::Pending => return std::task::Poll::Pending,
 					}
 				},
 
@@ -245,57 +257,69 @@ impl<IoS> Stream for Client<IoS> where IoS: IoSource, <<IoS as IoSource>::Future
 
 					reason,
 				} => {
-					let self::connect::Connected { framed, .. } = match connect.poll(
+					let connect::Connected { mut framed, .. } = match connect.poll(
+						cx,
 						username.as_ref().map(AsRef::as_ref),
 						will.as_ref(),
 						client_id,
 						*keep_alive,
 					) {
-						Ok(futures::Async::Ready(framed)) => framed,
-						Ok(futures::Async::NotReady) => {
+						std::task::Poll::Ready(framed) => framed,
+						std::task::Poll::Pending => {
 							// Already disconnected
 							self.0 = ClientState::ShutDown { reason: reason.take() };
 							continue;
 						},
-						Err(()) => unreachable!(),
 					};
 
 					loop {
 						if *sent_disconnect {
-							match framed.poll_complete().map_err(Error::EncodePacket) {
-								Ok(futures::Async::Ready(())) => {
+							match std::pin::Pin::new(&mut framed).poll_flush(cx) {
+								std::task::Poll::Ready(Ok(())) => {
 									self.0 = ClientState::ShutDown { reason: reason.take() };
 									break;
 								},
 
-								Ok(futures::Async::NotReady) => return Ok(futures::Async::NotReady),
-
-								Err(err) => {
+								std::task::Poll::Ready(Err(err)) => {
+									let err = Error::EncodePacket(err);
 									log::warn!("couldn't send DISCONNECT: {}", err);
 									self.0 = ClientState::ShutDown { reason: reason.take() };
 									break;
 								},
+
+								std::task::Poll::Pending => return std::task::Poll::Pending,
 							}
 						}
 						else {
-							match framed.start_send(crate::proto::Packet::Disconnect(crate::proto::Disconnect)) {
-								Ok(futures::AsyncSink::Ready) => *sent_disconnect = true,
+							match std::pin::Pin::new(&mut framed).poll_ready(cx) {
+								std::task::Poll::Ready(Ok(())) => {
+									let packet = crate::proto::Packet::Disconnect(crate::proto::Disconnect);
+									match std::pin::Pin::new(&mut framed).start_send(packet) {
+										Ok(()) => *sent_disconnect = true,
 
-								Ok(futures::AsyncSink::NotReady(_)) => return Ok(futures::Async::NotReady),
+										Err(err) => {
+											log::warn!("couldn't send DISCONNECT: {}", err);
+											self.0 = ClientState::ShutDown { reason: reason.take() };
+											break;
+										},
+									}
+								},
 
-								Err(err) => {
+								std::task::Poll::Ready(Err(err)) => {
 									log::warn!("couldn't send DISCONNECT: {}", err);
 									self.0 = ClientState::ShutDown { reason: reason.take() };
 									break;
 								},
+
+								std::task::Poll::Pending => return std::task::Poll::Pending,
 							}
 						}
 					}
 				},
 
 				ClientState::ShutDown { reason } => match reason.take() {
-					Some(err) => return Err(err),
-					None => return Ok(futures::Async::Ready(None)),
+					Some(err) => return std::task::Poll::Ready(Some(Err(err))),
+					None => return std::task::Poll::Ready(None),
 				},
 			}
 		};
@@ -326,7 +350,7 @@ impl<IoS> Stream for Client<IoS> where IoS: IoSource, <<IoS as IoSource>::Future
 
 					reason,
 				};
-				self.poll()
+				self.poll_next(cx)
 			},
 
 			_ => unreachable!(),
@@ -339,22 +363,26 @@ impl<IoS> Stream for Client<IoS> where IoS: IoSource, <<IoS as IoSource>::Future
 /// The trait is automatically implemented for all [`FnMut`] that return a connection future.
 pub trait IoSource {
 	/// The I/O object
-	type Io: tokio_io::AsyncRead + tokio_io::AsyncWrite;
+	type Io: tokio::io::AsyncRead + tokio::io::AsyncWrite;
+
+	/// The error type for this I/O object's connection future.
+	type Error;
 
 	/// The connection future. Contains the I/O object and optional password.
-	type Future: Future<Item = (Self::Io, Option<String>)>;
+	type Future: Future<Output = Result<(Self::Io, Option<String>), Self::Error>>;
 
 	/// Attempts the connection and returns a [`Future`] that resolves when the connection succeeds
 	fn connect(&mut self) -> Self::Future;
 }
 
-impl<F, A, I> IoSource for F
+impl<F, A, I, E> IoSource for F
 where
 	F: FnMut() -> A,
-	A: Future<Item = (I, Option<String>)>,
-	I: tokio_io::AsyncRead + tokio_io::AsyncWrite,
+	A: Future<Output = Result<(I, Option<String>), E>>,
+	I: tokio::io::AsyncRead + tokio::io::AsyncWrite,
 {
 	type Io = I;
+	type Error = E;
 	type Future = A;
 
 	fn connect(&mut self) -> Self::Future {
@@ -395,18 +423,20 @@ pub struct ReceivedPublication {
 	pub payload: bytes::Bytes,
 }
 
-pub struct ShutdownHandle(futures::sync::mpsc::Sender<()>);
+pub struct ShutdownHandle(futures_channel::mpsc::Sender<()>);
 
 impl ShutdownHandle {
 	/// Signals the [`Client`] to shut down.
 	///
 	/// The returned `Future` resolves when the `Client` is guaranteed the notification,
 	/// not necessarily when the `Client` has completed shutting down.
-	pub fn shutdown(&self) -> impl Future<Item = (), Error = ShutdownError> {
-		self.0.clone().send(()).then(|result| match result {
+	pub async fn shutdown(&mut self) -> Result<(), ShutdownError> {
+		use futures_util::SinkExt;
+
+		match self.0.send(()).await {
 			Ok(_) => Ok(()),
 			Err(_) => Err(ShutdownError::ClientDoesNotExist),
-		})
+		}
 	}
 }
 
@@ -418,15 +448,15 @@ enum ClientState<IoS> where IoS: IoSource {
 		will: Option<crate::proto::Publication>,
 		keep_alive: std::time::Duration,
 
-		shutdown_send: futures::sync::mpsc::Sender<()>,
-		shutdown_recv: futures::sync::mpsc::Receiver<()>,
+		shutdown_send: futures_channel::mpsc::Sender<()>,
+		shutdown_recv: futures_channel::mpsc::Receiver<()>,
 
 		packet_identifiers: PacketIdentifiers,
 
-		connect: self::connect::Connect<IoS>,
-		ping: self::ping::State,
-		publish: self::publish::State,
-		subscriptions: self::subscriptions::State,
+		connect: connect::Connect<IoS>,
+		ping: ping::State,
+		publish: publish::State,
+		subscriptions: subscriptions::State,
 
 		/// Packets waiting to be written to the underlying `Framed`
 		packets_waiting_to_be_sent: std::collections::VecDeque<crate::proto::Packet>,
@@ -438,7 +468,7 @@ enum ClientState<IoS> where IoS: IoSource {
 		will: Option<crate::proto::Publication>,
 		keep_alive: std::time::Duration,
 
-		connect: self::connect::Connect<IoS>,
+		connect: connect::Connect<IoS>,
 
 		/// If the DISCONNECT packet has already been sent
 		sent_disconnect: bool,
@@ -454,58 +484,68 @@ enum ClientState<IoS> where IoS: IoSource {
 }
 
 fn client_poll<S>(
+	cx: &mut std::task::Context<'_>,
+
 	framed: &mut crate::logging_framed::LoggingFramed<S>,
 	keep_alive: std::time::Duration,
 	packets_waiting_to_be_sent: &mut std::collections::VecDeque<crate::proto::Packet>,
 	packet_identifiers: &mut PacketIdentifiers,
-	ping: &mut self::ping::State,
-	publish: &mut self::publish::State,
-	subscriptions: &mut self::subscriptions::State,
-) -> futures::Poll<Event, Error>
+	ping: &mut ping::State,
+	publish: &mut publish::State,
+	subscriptions: &mut subscriptions::State,
+) -> std::task::Poll<Result<Event, Error>>
 where
-	S: tokio_io::AsyncRead + tokio_io::AsyncWrite,
+	S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
+	use futures_core::Stream;
+	use futures_sink::Sink;
+
 	loop {
 		// Begin sending any packets waiting to be sent
 		while let Some(packet) = packets_waiting_to_be_sent.pop_front() {
-			match framed.start_send(packet).map_err(Error::EncodePacket)? {
-				futures::AsyncSink::Ready => (),
+			match std::pin::Pin::new(&mut *framed).poll_ready(cx) {
+				std::task::Poll::Ready(result) => {
+					let () = result.map_err(Error::EncodePacket)?;
+					let () = std::pin::Pin::new(&mut *framed).start_send(packet).map_err(Error::EncodePacket)?;
+				},
 
-				futures::AsyncSink::NotReady(packet) => {
+				std::task::Poll::Pending => {
 					packets_waiting_to_be_sent.push_front(packet);
 					break;
 				},
 			}
+
 		}
 
 		// Finish sending any packets waiting to be sent.
 		//
-		// We don't care whether this returns Async::NotReady or Ready.
-		let _ = framed.poll_complete().map_err(Error::EncodePacket)?;
+		// We don't care whether this returns Poll::Ready or Poll::Pending.
+		let _: std::task::Poll<_> = std::pin::Pin::new(&mut *framed).poll_flush(cx).map_err(Error::EncodePacket)?;
 
 		let mut continue_loop = false;
 
-		let mut packet = match framed.poll().map_err(Error::DecodePacket)? {
-			futures::Async::Ready(Some(packet)) => {
+		let mut packet = match std::pin::Pin::new(&mut *framed).poll_next(cx) {
+			std::task::Poll::Ready(Some(packet)) => {
+				let packet = packet.map_err(Error::DecodePacket)?;
+
 				// May have more packets after this one, so keep looping
 				continue_loop = true;
 				Some(packet)
 			},
-			futures::Async::Ready(None) => return Err(Error::ServerClosedConnection),
-			futures::Async::NotReady => None,
+			std::task::Poll::Ready(None) => return std::task::Poll::Ready(Err(Error::ServerClosedConnection)),
+			std::task::Poll::Pending => None,
 		};
 
 		let mut new_packets_to_be_sent = vec![];
 
 
 		// Ping
-		match ping.poll(&mut packet, keep_alive)? {
-			futures::Async::Ready(packet) => new_packets_to_be_sent.push(packet),
-			futures::Async::NotReady => (),
-		}
+		let ping_packet = ping.poll(cx, &mut packet, keep_alive);
+		new_packets_to_be_sent.extend(ping_packet);
 
 		// Publish
 		let (new_publish_packets, publication_received) = publish.poll(
+			cx,
 			&mut packet,
 			packet_identifiers,
 		)?;
@@ -514,10 +554,13 @@ where
 		// Subscriptions
 		let subscription_updates =
 			if publication_received.is_some() {
+				// Already have a new publication to return from this tick, so can't process pending subscription updates
+				// because they might generate their own responses.
 				vec![]
 			}
 			else {
 				let (new_subscription_packets, subscription_updates) = subscriptions.poll(
+					cx,
 					&mut packet,
 					packet_identifiers,
 				)?;
@@ -535,15 +578,15 @@ where
 		}
 
 		if let Some(publication_received) = publication_received {
-			return Ok(futures::Async::Ready(Event::Publication(publication_received)));
+			return std::task::Poll::Ready(Ok(Event::Publication(publication_received)));
 		}
 
 		if !subscription_updates.is_empty() {
-			return Ok(futures::Async::Ready(Event::SubscriptionUpdates(subscription_updates)));
+			return std::task::Poll::Ready(Ok(Event::SubscriptionUpdates(subscription_updates)));
 		}
 
 		if !continue_loop {
-			return Ok(futures::Async::NotReady);
+			return std::task::Poll::Pending;
 		}
 	}
 }
@@ -554,6 +597,7 @@ struct PacketIdentifiers {
 }
 
 impl PacketIdentifiers {
+	#[allow(clippy::doc_markdown)]
 	/// Size of a bitset for every packet identifier
 	///
 	/// Packet identifiers are u16's, so the number of usize's required
@@ -613,7 +657,7 @@ pub enum Error {
 	DuplicateExactlyOncePublishPacketNotMarkedDuplicate(crate::proto::PacketIdentifier),
 	EncodePacket(crate::proto::EncodeError),
 	PacketIdentifiersExhausted,
-	PingTimer(tokio_timer::Error),
+	PingTimer(tokio::time::Error),
 	ServerClosedConnection,
 	SubAckDoesNotContainEnoughQoS(crate::proto::PacketIdentifier, usize, usize),
 	SubscriptionDowngraded(String, crate::proto::QoS, crate::proto::QoS),

@@ -1,7 +1,7 @@
 use std::convert::TryInto;
 
-use bytes::{ Buf, BufMut, IntoBuf };
-use tokio_codec::Decoder;
+use bytes::{ Buf, BufMut };
+use tokio_util::codec::Decoder;
 
 use super::{ BufMutExt, ByteBuf };
 
@@ -257,7 +257,7 @@ impl PacketMeta for Connect {
 			dst.put_u8_bytes(connect_flags);
 		}
 
-		dst.put_u16_be_bytes(keep_alive.as_secs().try_into().map_err(|_| super::EncodeError::KeepAliveTooHigh(*keep_alive))?);
+		dst.put_u16_bytes(keep_alive.as_secs().try_into().map_err(|_| super::EncodeError::KeepAliveTooHigh(*keep_alive))?);
 
 		match client_id {
 			super::ClientId::ServerGenerated => super::encode_utf8_str("", dst)?,
@@ -269,7 +269,7 @@ impl PacketMeta for Connect {
 			super::encode_utf8_str(&will.topic_name, dst)?;
 
 			let will_len = will.payload.len();
-			dst.put_u16_be_bytes(will_len.try_into().map_err(|_| super::EncodeError::WillTooLarge(will_len))?);
+			dst.put_u16_bytes(will_len.try_into().map_err(|_| super::EncodeError::WillTooLarge(will_len))?);
 
 			dst.put_slice_bytes(&will.payload);
 		}
@@ -543,7 +543,7 @@ impl PacketMeta for SubAck {
 
 		let packet_identifier = src.get_packet_identifier()?;
 
-		let qos: Result<Vec<_>, _> = src.into_buf().iter().map(|qos| match qos {
+		let qos: Result<Vec<_>, _> = src.iter().map(|&qos| match qos {
 			0x00 => Ok(SubAckQos::Success(QoS::AtMostOnce)),
 			0x01 => Ok(SubAckQos::Success(QoS::AtLeastOnce)),
 			0x02 => Ok(SubAckQos::Success(QoS::ExactlyOnce)),
@@ -787,7 +787,7 @@ impl Default for PacketDecoderState {
 	}
 }
 
-impl tokio_codec::Decoder for PacketCodec {
+impl tokio_util::codec::Decoder for PacketCodec {
 	type Item = Packet;
 	type Error = super::DecodeError;
 
@@ -842,7 +842,7 @@ impl tokio_codec::Decoder for PacketCodec {
 	}
 }
 
-impl tokio_codec::Encoder for PacketCodec {
+impl tokio_util::codec::Encoder for PacketCodec {
 	type Item = Packet;
 	type Error = super::EncodeError;
 

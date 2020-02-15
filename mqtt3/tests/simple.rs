@@ -2,7 +2,7 @@ mod common;
 
 #[test]
 fn server_generated_id_can_connect_and_idle() {
-	let mut runtime = tokio::runtime::current_thread::Runtime::new().expect("couldn't initialize tokio runtime");
+	let mut runtime = tokio::runtime::Builder::new().basic_scheduler().enable_time().build().expect("couldn't initialize tokio runtime");
 
 	let (io_source, done) = common::IoSource::new(vec![
 		vec![
@@ -67,12 +67,12 @@ fn server_generated_id_can_connect_and_idle() {
 		mqtt3::Event::NewConnection { reset_session: true },
 	]);
 
-	runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
+	let () = runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
 }
 
 #[test]
 fn client_id_can_connect_and_idle() {
-	let mut runtime = tokio::runtime::current_thread::Runtime::new().expect("couldn't initialize tokio runtime");
+	let mut runtime = tokio::runtime::Builder::new().basic_scheduler().enable_time().build().expect("couldn't initialize tokio runtime");
 
 	let (io_source, done) = common::IoSource::new(vec![
 		vec![
@@ -164,5 +164,5 @@ fn client_id_can_connect_and_idle() {
 		mqtt3::Event::NewConnection { reset_session: false },
 	]);
 
-	runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
+	let () = runtime.block_on(done).expect("connection broken while there were still steps remaining on the server");
 }

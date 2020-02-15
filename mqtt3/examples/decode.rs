@@ -10,7 +10,8 @@
 
 use std::io::Read;
 
-use tokio::codec::{ Decoder, Encoder };
+use bytes::Buf;
+use tokio_util::codec::{ Decoder, Encoder };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
 	let filename = std::env::args_os().nth(1).ok_or("expected one argument set to the name of the file to decode")?;

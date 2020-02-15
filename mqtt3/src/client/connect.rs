@@ -1,4 +1,4 @@
-use futures::{ Future, Sink, Stream };
+use std::future::Future;
 
 #[derive(Debug)]
 pub(super) struct Connect<IoS> where IoS: super::IoSource {
@@ -10,7 +10,7 @@ pub(super) struct Connect<IoS> where IoS: super::IoSource {
 
 enum State<IoS> where IoS: super::IoSource {
 	BeginBackOff,
-	EndBackOff(tokio_timer::Delay),
+	EndBackOff(tokio::time::Delay),
 	BeginConnecting,
 	WaitingForIoToConnect(<IoS as super::IoSource>::Future),
 	Framed {
@@ -29,10 +29,6 @@ enum FramedState {
 }
 
 impl<IoS> std::fmt::Debug for State<IoS> where IoS: super::IoSource {
-	#[allow(
-		clippy::unneeded_field_pattern, // Clippy wants wildcard pattern for Connected,
-		                                // which would silently allow fields to be added to the variant without adding them here
-	)]
 	fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
 		match self {
 			State::BeginBackOff => f.write_str("BeginBackOff"),
@@ -59,14 +55,24 @@ impl<IoS> Connect<IoS> where IoS: super::IoSource {
 	}
 }
 
-impl<IoS> Connect<IoS> where IoS: super::IoSource, <<IoS as super::IoSource>::Future as Future>::Error: std::fmt::Display {
+impl<IoS> Connect<IoS> where
+	IoS: super::IoSource,
+	<IoS as super::IoSource>::Io: Unpin,
+	<IoS as super::IoSource>::Error: std::fmt::Display,
+	<IoS as super::IoSource>::Future: Unpin,
+{
 	pub(super) fn poll<'a>(
 		&'a mut self,
+		cx: &mut std::task::Context<'_>,
+
 		username: Option<&str>,
 		will: Option<&crate::proto::Publication>,
 		client_id: &mut crate::proto::ClientId,
 		keep_alive: std::time::Duration,
-	) -> futures::Poll<Connected<'a, IoS>, ()> {
+	) -> std::task::Poll<Connected<'a, IoS>> {
+		use futures_core::Stream;
+		use futures_sink::Sink;
+
 		let state = &mut self.state;
 
 		loop {
@@ -81,15 +87,14 @@ impl<IoS> Connect<IoS> where IoS: super::IoSource, <<IoS as super::IoSource>::Fu
 
 					back_off => {
 						log::debug!("Backing off for {:?}", back_off);
-						let back_off_deadline = std::time::Instant::now() + back_off;
 						self.current_back_off = std::cmp::min(self.max_back_off, self.current_back_off * 2);
-						*state = State::EndBackOff(tokio_timer::Delay::new(back_off_deadline));
+						*state = State::EndBackOff(tokio::time::delay_for(back_off));
 					},
 				},
 
-				State::EndBackOff(back_off_timer) => match back_off_timer.poll().expect("could not poll back-off timer") {
-					futures::Async::Ready(()) => *state = State::BeginConnecting,
-					futures::Async::NotReady => return Ok(futures::Async::NotReady),
+				State::EndBackOff(back_off_timer) => match std::pin::Pin::new(back_off_timer).poll(cx) {
+					std::task::Poll::Ready(()) => *state = State::BeginConnecting,
+					std::task::Poll::Pending => return std::task::Poll::Pending,
 				},
 
 				State::BeginConnecting => {
@@ -97,8 +102,8 @@ impl<IoS> Connect<IoS> where IoS: super::IoSource, <<IoS as super::IoSource>::Fu
 					*state = State::WaitingForIoToConnect(io);
 				},
 
-				State::WaitingForIoToConnect(io) => match io.poll() {
-					Ok(futures::Async::Ready((io, password))) => {
+				State::WaitingForIoToConnect(io) => match std::pin::Pin::new(io).poll(cx) {
+					std::task::Poll::Ready(Ok((io, password))) => {
 						let framed = crate::logging_framed::LoggingFramed::new(io);
 						*state =
 							State::Framed {
@@ -108,44 +113,54 @@ impl<IoS> Connect<IoS> where IoS: super::IoSource, <<IoS as super::IoSource>::Fu
 							};
 					},
 
-					Ok(futures::Async::NotReady) => return Ok(futures::Async::NotReady),
-
-					Err(err) => {
+					std::task::Poll::Ready(Err(err)) => {
 						log::warn!("could not connect to server: {}", err);
 						*state = State::BeginBackOff;
 					},
+
+					std::task::Poll::Pending => return std::task::Poll::Pending,
 				},
 
 				State::Framed { framed, framed_state: framed_state @ FramedState::BeginSendingConnect, password } => {
-					let packet = crate::proto::Packet::Connect(crate::proto::Connect {
-						username: username.map(ToOwned::to_owned),
-						password: password.clone(),
-						will: will.cloned(),
-						client_id: client_id.clone(),
-						keep_alive,
-					});
+					match std::pin::Pin::new(&mut *framed).poll_ready(cx) {
+						std::task::Poll::Ready(Ok(())) => {
+							let packet = crate::proto::Packet::Connect(crate::proto::Connect {
+								username: username.map(ToOwned::to_owned),
+								password: password.clone(),
+								will: will.cloned(),
+								client_id: client_id.clone(),
+								keep_alive,
+							});
 
-					match framed.start_send(packet) {
-						Ok(futures::AsyncSink::Ready) => *framed_state = FramedState::EndSendingConnect,
-						Ok(futures::AsyncSink::NotReady(_)) => return Ok(futures::Async::NotReady),
-						Err(err) => {
+							match std::pin::Pin::new(&mut *framed).start_send(packet) {
+								Ok(()) => *framed_state = FramedState::EndSendingConnect,
+								Err(err) => {
+									log::warn!("could not connect to server: {}", err);
+									*state = State::BeginBackOff;
+								},
+							}
+						},
+
+						std::task::Poll::Ready(Err(err)) => {
 							log::warn!("could not connect to server: {}", err);
 							*state = State::BeginBackOff;
 						},
+
+						std::task::Poll::Pending => return std::task::Poll::Pending,
 					}
 				},
 
-				State::Framed { framed, framed_state: framed_state @ FramedState::EndSendingConnect, .. } => match framed.poll_complete() {
-					Ok(futures::Async::Ready(())) => *framed_state = FramedState::WaitingForConnAck,
-					Ok(futures::Async::NotReady) => return Ok(futures::Async::NotReady),
-					Err(err) => {
+				State::Framed { framed, framed_state: framed_state @ FramedState::EndSendingConnect, .. } => match std::pin::Pin::new(framed).poll_flush(cx) {
+					std::task::Poll::Ready(Ok(())) => *framed_state = FramedState::WaitingForConnAck,
+					std::task::Poll::Ready(Err(err)) => {
 						log::warn!("could not connect to server: {}", err);
 						*state = State::BeginBackOff;
 					},
+					std::task::Poll::Pending => return std::task::Poll::Pending,
 				},
 
-				State::Framed { framed, framed_state: framed_state @ FramedState::WaitingForConnAck, .. } => match framed.poll() {
-					Ok(futures::Async::Ready(Some(packet))) => match packet {
+				State::Framed { framed, framed_state: framed_state @ FramedState::WaitingForConnAck, .. } => match std::pin::Pin::new(framed).poll_next(cx) {
+					std::task::Poll::Ready(Some(Ok(packet))) => match packet {
 						crate::proto::Packet::ConnAck(crate::proto::ConnAck { session_present, return_code: crate::proto::ConnectReturnCode::Accepted }) => {
 							self.current_back_off = std::time::Duration::from_secs(0);
 
@@ -175,17 +190,17 @@ impl<IoS> Connect<IoS> where IoS: super::IoSource, <<IoS as super::IoSource>::Fu
 						},
 					},
 
-					Ok(futures::Async::Ready(None)) => {
+					std::task::Poll::Ready(Some(Err(err))) => {
+						log::warn!("could not connect to server: {}", err);
+						*state = State::BeginBackOff;
+					},
+
+					std::task::Poll::Ready(None) => {
 						log::warn!("could not connect to server: connection closed by server");
 						*state = State::BeginBackOff;
 					},
 
-					Ok(futures::Async::NotReady) => return Ok(futures::Async::NotReady),
-
-					Err(err) => {
-						log::warn!("could not connect to server: {}", err);
-						*state = State::BeginBackOff;
-					},
+					std::task::Poll::Pending => return std::task::Poll::Pending,
 				},
 
 				State::Framed { framed, framed_state: FramedState::Connected { new_connection, reset_session }, .. } => {
@@ -196,7 +211,7 @@ impl<IoS> Connect<IoS> where IoS: super::IoSource, <<IoS as super::IoSource>::Fu
 					};
 					*new_connection = false;
 					*reset_session = false;
-					return Ok(futures::Async::Ready(result));
+					return std::task::Poll::Ready(result);
 				},
 			}
 		}

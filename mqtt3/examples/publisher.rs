@@ -2,11 +2,9 @@
 //
 //     cargo run --example publisher -- --server 127.0.0.1:1883 --client-id 'example-publisher' --publish-frequency 1000 --topic foo --qos 1 --payload 'hello, world'
 
-use futures::{ Future, Stream };
-
 mod common;
 
-#[derive(Debug, structopt_derive::StructOpt)]
+#[derive(Debug, structopt::StructOpt)]
 struct Options {
 	#[structopt(help = "Address of the MQTT server.", long = "server")]
 	server: std::net::SocketAddr,
@@ -24,7 +22,7 @@ struct Options {
 		help = "Maximum back-off time between reconnections to the server, in seconds.",
 		long = "max-reconnect-back-off",
 		default_value = "30",
-		parse(try_from_str = "common::duration_from_secs_str"),
+		parse(try_from_str = common::duration_from_secs_str),
 	)]
 	max_reconnect_back_off: std::time::Duration,
 
@@ -32,7 +30,7 @@ struct Options {
 		help = "Keep-alive time advertised to the server, in seconds.",
 		long = "keep-alive",
 		default_value = "5",
-		parse(try_from_str = "common::duration_from_secs_str"),
+		parse(try_from_str = common::duration_from_secs_str),
 	)]
 	keep_alive: std::time::Duration,
 
@@ -40,14 +38,14 @@ struct Options {
 		help = "How often to publish to the server, in milliseconds.",
 		long = "publish-frequency",
 		default_value = "1000",
-		parse(try_from_str = "duration_from_millis_str"),
+		parse(try_from_str = duration_from_millis_str),
 	)]
 	publish_frequency: std::time::Duration,
 
 	#[structopt(help = "The topic of the publications.", long = "topic")]
 	topic: String,
 
-	#[structopt(help = "The QoS of the publications.", long = "qos", parse(try_from_str = "common::qos_from_str"))]
+	#[structopt(help = "The QoS of the publications.", long = "qos", parse(try_from_str = common::qos_from_str))]
 	qos: mqtt3::proto::QoS,
 
 	#[structopt(help = "The payload of the publications.", long = "payload")]
@@ -71,63 +69,65 @@ fn main() {
 	} = structopt::StructOpt::from_args();
 
 	let mut runtime = tokio::runtime::Runtime::new().expect("couldn't initialize tokio runtime");
-	let executor = runtime.executor();
+	let runtime_handle = runtime.handle().clone();
 
-	let client =
+	let mut client =
 		mqtt3::Client::new(
 			client_id,
 			username,
 			None,
 			move || {
 				let password = password.clone();
-				tokio::net::TcpStream::connect(&server).map(|io| (io, password))
+				Box::pin(async move {
+					let io = tokio::net::TcpStream::connect(&server).await;
+					io.map(|io| (io, password))
+				})
 			},
 			max_reconnect_back_off,
 			keep_alive,
 		);
 
-	let shutdown_handle = client.shutdown_handle().expect("couldn't get shutdown handle");
-	runtime.spawn(
-		tokio_signal::ctrl_c()
-		.flatten_stream()
-		.into_future()
-		.then(move |_| shutdown_handle.shutdown())
-		.then(|result| {
-			result.expect("couldn't send shutdown notification");
-			Ok(())
-		}));
+	let mut shutdown_handle = client.shutdown_handle().expect("couldn't get shutdown handle");
+	runtime.spawn(async move {
+		let () = tokio::signal::ctrl_c().await.expect("couldn't get Ctrl-C notification");
+		let result = shutdown_handle.shutdown().await;
+		let () = result.expect("couldn't send shutdown notification");
+	});
 
 	let payload: bytes::Bytes = payload.into();
 
-	let mut publish_handle = client.publish_handle().expect("couldn't get publish handle");
-	executor.clone().spawn(
-		tokio::timer::Interval::new(std::time::Instant::now(), publish_frequency)
-		.then(move |result| {
-			let _ = result.expect("timer failed");
+	let publish_handle = client.publish_handle().expect("couldn't get publish handle");
+	runtime_handle.clone().spawn(async move {
+		use futures_util::StreamExt;
 
+		let mut interval = tokio::time::interval(publish_frequency);
+		while let Some(_) = interval.next().await {
 			let topic = topic.clone();
 			log::info!("Publishing to {} ...", topic);
 
-			executor.spawn(publish_handle
-				.publish(mqtt3::proto::Publication {
+			let mut publish_handle = publish_handle.clone();
+			let payload = payload.clone();
+			runtime_handle.spawn(async move {
+				let result = publish_handle.publish(mqtt3::proto::Publication {
 					topic_name: topic.clone(),
 					qos,
 					retain: false,
-					payload: payload.clone(),
-				})
-				.then(move |result| {
-					let () = result.expect("couldn't publish");
-					log::info!("Published to {}", topic);
-					Ok(())
-				}));
+					payload,
+				}).await;
+				let () = result.expect("couldn't publish");
+				log::info!("Published to {}", topic);
+				Ok::<_, ()>(())
+			});
+		}
+	});
 
-			Ok(())
-		})
-		.for_each(Ok));
+	let () = runtime.block_on(async {
+		use futures_util::StreamExt;
 
-	let f = client.for_each(|_| Ok(()));
-
-	runtime.block_on(f).expect("subscriber failed");
+		while let Some(event) = client.next().await {
+			let _ = event.unwrap();
+		}
+	});
 }
 
 fn duration_from_millis_str(s: &str) -> Result<std::time::Duration, <u64 as std::str::FromStr>::Err> {

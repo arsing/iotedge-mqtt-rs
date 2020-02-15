@@ -8,7 +8,7 @@ An MQTT v3.1.1 Client implementation in Rust
 - Transparently reconnects when connection is broken or protocol errors, with back-off.
 - Handles subscription and ongoing QoS 1 and QoS 2 publish workflows across reconnections. You don't need to resubscribe or republish messages when the connection is re-established.
 - Agnostic to the underlying transport, so it can run over TCP, TLS, WebSockets, etc.
-- Standard futures 0.1 and tokio 0.1 interface. The client is just a `futures::Stream` of publications received from the server. The underlying transport just needs to implement `tokio::io::AsyncRead` and `tokio::io::AsyncWrite`.
+- Standard futures 0.3 and tokio 0.2 interface. The client is just a `futures_core::Stream` of publications received from the server. The underlying transport just needs to implement `tokio::io::AsyncRead` and `tokio::io::AsyncWrite`.
 
 
 # Documentation
